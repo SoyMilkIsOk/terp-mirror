@@ -27,10 +27,11 @@ camera:
 
 ## Running the mirror
 
-Install the dependencies (OpenCV, Pygame, and PyYAML), then launch the mirror
-from the repository root:
+Install the dependencies (OpenCV, Pygame, NumPy, and PyYAML), then launch the
+mirror from the repository root:
 
 ```bash
+pip install -r requirements.txt
 python -m terp_mirror.mirror_app
 ```
 
@@ -40,3 +41,7 @@ python -m terp_mirror.mirror_app
 * `--config` &mdash; Load settings from a different YAML config file.
 
 The mirror runs fullscreen; press <kbd>Esc</kbd> or <kbd>Q</kbd> to exit.
+
+> **Note:** The requirements pin NumPy below `2.3` to remain compatible with the
+> tested OpenCV and SciPy wheels. Adjust the constraint only if you update those
+> dependencies as well.
