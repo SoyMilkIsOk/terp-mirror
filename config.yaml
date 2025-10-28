@@ -4,3 +4,7 @@ mirror: true
 camera:
   index: 0
 target_fps: 60
+timers:
+  rolling: 3.0
+  result: 5.0
+  cooldown: 2.5
