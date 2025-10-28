@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +40,7 @@ class MirrorConfig:
     roll_duration: float
     result_duration: float
     cooldown_duration: float
+    dry_run: bool = False
 
 
 def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
@@ -90,6 +91,7 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         roll_duration=roll_duration,
         result_duration=result_duration,
         cooldown_duration=cooldown_duration,
+        dry_run=bool(data.get("dry_run", False)),
     )
 
 
@@ -155,7 +157,7 @@ class ResultOverlay:
         self.title_font = pygame.font.Font(None, 96)
         self.body_font = pygame.font.Font(None, 48)
 
-    def draw(self, target: pygame.Surface) -> None:
+    def draw(self, target: pygame.Surface, prize_text: Optional[str]) -> None:
         overlay = pygame.Surface(target.get_size(), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 160))
 
@@ -168,7 +170,8 @@ class ResultOverlay:
         pygame.draw.rect(overlay, (128, 0, 128, 255), card_rect, width=6, border_radius=20)
 
         title_surface = self.title_font.render("Spin Complete!", True, (40, 0, 70))
-        body_surface = self.body_font.render("Your prize awaits...", True, (40, 0, 70))
+        prize_message = f"Prize: {prize_text}" if prize_text else "Your prize awaits..."
+        body_surface = self.body_font.render(prize_message, True, (40, 0, 70))
 
         title_rect = title_surface.get_rect(center=(card_rect.centerx, card_rect.centery - 40))
         body_rect = body_surface.get_rect(center=(card_rect.centerx, card_rect.centery + 40))
@@ -180,8 +183,11 @@ class ResultOverlay:
 
 
 def _capture_phase(
-    cap: "cv2.VideoCapture", config: MirrorConfig, screen_size: tuple[int, int]
+    cap: Optional["cv2.VideoCapture"], config: MirrorConfig, screen_size: tuple[int, int]
 ) -> Optional[pygame.Surface]:
+    if cap is None:
+        return None
+
     ret, frame = cap.read()
     if not ret:
         return None
@@ -214,6 +220,8 @@ def _update_phase(
                 state_machine.trigger_roll()
             elif event.key == pygame.K_f:
                 state_machine.force_result()
+            elif event.key == pygame.K_g:
+                state_machine.force_grand_prize()
 
     state_machine.update()
     return running
@@ -234,7 +242,7 @@ def _render_phase(
     if state_machine.state is MirrorState.ROLLING:
         spinner.draw(screen, state_machine.time_in_state() * 2 * math.pi)
     elif state_machine.state is MirrorState.RESULT:
-        result_overlay.draw(screen)
+        result_overlay.draw(screen, state_machine.current_prize)
 
 
 def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> None:
@@ -242,10 +250,13 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
 
     monitor_index = monitor_override if monitor_override is not None else config.monitor_index
     camera_index = config.camera_index
+    dry_run = config.dry_run
 
-    cap = cv2.VideoCapture(camera_index)
-    if not cap.isOpened():
-        raise RuntimeError(f"Unable to open camera index {camera_index}.")
+    cap: Optional["cv2.VideoCapture"] = None
+    if not dry_run:
+        cap = cv2.VideoCapture(camera_index)
+        if not cap.isOpened():
+            raise RuntimeError(f"Unable to open camera index {camera_index}.")
 
     pygame.init()
     pygame.display.set_caption("Terp Mirror")
@@ -258,6 +269,7 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
         roll_duration=config.roll_duration,
         result_duration=config.result_duration,
         cooldown_duration=config.cooldown_duration,
+        dry_run=dry_run,
     )
     spinner = SpinnerOverlay()
     result_overlay = ResultOverlay()
@@ -279,7 +291,8 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
             pygame.display.flip()
             clock.tick(config.target_fps)
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
         pygame.quit()
 
 
@@ -296,9 +309,16 @@ def main(argv: Optional[list[str]] = None) -> None:
         default=CONFIG_PATH,
         help=f"Path to configuration file (default: {CONFIG_PATH}).",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run without attempting to access the camera (testing mode).",
+    )
 
     args = parser.parse_args(argv)
     config = load_config(args.config)
+    if args.dry_run:
+        config = replace(config, dry_run=True)
     run_mirror(config, monitor_override=args.monitor)
 
 

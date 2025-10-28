@@ -4,6 +4,7 @@ mirror: true
 camera:
   index: 0
 target_fps: 60
+dry_run: false
 timers:
   rolling: 3.0
   result: 5.0
