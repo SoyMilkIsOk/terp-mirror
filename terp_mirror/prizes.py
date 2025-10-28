@@ -20,11 +20,11 @@ class Prize:
 
 # Core prize catalog excluding the grand prize. Edit this list to update odds.
 PRIZE_CATALOG: List[Prize] = [
-    Prize("Sticker Pack", 35, "A bundle of limited-edition stickers."),
-    Prize("Keychain", 25, "A custom Terp Wizard keychain."),
-    Prize("T-Shirt", 20, "A commemorative event t-shirt."),
-    Prize("Mystery Box", 15, "A surprise assortment of goodies."),
-    Prize("VIP Pass", 5, "Front-row access to the next showcase."),
+    Prize("Candy + Stickers", 33, "A sweet treat and some Terp Mirror swag."),
+    Prize("OG Terpscoop", 33, "A classic Terpscoop of your choosing."),
+    Prize("Lighter Case", 20, "A sleek case for your lighter. Lost of designs!"),
+    Prize("XL Terpscoop", 10, "An extra-large Terpscoop for big scoops."),
+    Prize("Terpz T-Shirt", 3, "A comfy Terpz branded t-shirt."),
 ]
 
 GRAND_PRIZE_NAME = "Grand Prize"
