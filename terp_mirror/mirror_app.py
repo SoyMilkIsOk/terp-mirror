@@ -84,7 +84,12 @@ def _resolve_display_size(monitor_index: int) -> tuple[int, int]:
     """Return the full resolution for the requested monitor."""
 
     pygame.display.init()
-    available = pygame.display.get_num_video_displays()
+    # ``get_num_video_displays`` only exists on some SDL builds; fall back to the
+    # cross-version ``get_num_displays`` attribute when needed.
+    if hasattr(pygame.display, "get_num_video_displays"):
+        available = pygame.display.get_num_video_displays()
+    else:
+        available = pygame.display.get_num_displays()
     if available == 0:
         raise MirrorConfigError("No video displays detected for fullscreen output.")
 
