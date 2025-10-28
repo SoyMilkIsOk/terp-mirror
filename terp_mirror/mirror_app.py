@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import cv2
+try:
+    import cv2
+except ModuleNotFoundError as exc:  # pragma: no cover - import guard
+    raise SystemExit(
+        "OpenCV (cv2) is required. Install it with 'pip install opencv-python' or "
+        "'pip install -r requirements.txt'."
+    ) from exc
 import pygame
 import yaml
 

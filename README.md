@@ -43,5 +43,5 @@ python -m terp_mirror.mirror_app
 The mirror runs fullscreen; press <kbd>Esc</kbd> or <kbd>Q</kbd> to exit.
 
 > **Note:** The requirements pin NumPy to the `1.26` series so it remains
-> compatible with the tested OpenCV (4.8.x) and SciPy (1.10.x) wheels. Adjust the
-> dependencies as well.
+> compatible with the tested OpenCV (4.9.x) and SciPy (1.10.x) wheels. Adjust the
+> dependencies together if you change one.
