@@ -1,0 +1,6 @@
+monitor_index: 0
+rotate_deg: 0
+mirror: true
+camera:
+  index: 0
+target_fps: 30
