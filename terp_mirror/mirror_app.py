@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -16,6 +17,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover - import guard
     ) from exc
 import pygame
 import yaml
+
+from .states import MirrorState, MirrorStateMachine
 
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
@@ -34,6 +37,9 @@ class MirrorConfig:
     mirror: bool
     camera_index: int
     target_fps: int
+    roll_duration: float
+    result_duration: float
+    cooldown_duration: float
 
 
 def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
@@ -59,12 +65,31 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
     if rotate_deg not in {0, 90, -90, 180, -180}:
         raise MirrorConfigError("rotate_deg must be one of {0, 90, -90, 180, -180}.")
 
+    timers_cfg = data.get("timers", {})
+    try:
+        roll_duration = float(timers_cfg.get("rolling", 3.0))
+        result_duration = float(timers_cfg.get("result", 5.0))
+        cooldown_duration = float(timers_cfg.get("cooldown", 2.0))
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+        raise MirrorConfigError("Timer values must be numeric.") from exc
+
+    for name, value in {
+        "rolling": roll_duration,
+        "result": result_duration,
+        "cooldown": cooldown_duration,
+    }.items():
+        if value <= 0:
+            raise MirrorConfigError(f"Timer '{name}' must be greater than zero.")
+
     return MirrorConfig(
         monitor_index=int(data["monitor_index"]),
         rotate_deg=rotate_deg,
         mirror=bool(data["mirror"]),
         camera_index=int(camera_cfg["index"]),
         target_fps=max(1, int(data["target_fps"])),
+        roll_duration=roll_duration,
+        result_duration=result_duration,
+        cooldown_duration=cooldown_duration,
     )
 
 
@@ -105,6 +130,113 @@ def _resolve_display_size(monitor_index: int) -> tuple[int, int]:
     return desktop_sizes[monitor_index]
 
 
+class SpinnerOverlay:
+    """Simple spinner animation rendered as a rotating arc."""
+
+    def __init__(self, radius: int = 80, stroke: int = 12):
+        self.radius = radius
+        self.stroke = stroke
+
+    def draw(self, target: pygame.Surface, angle: float) -> None:
+        size = (self.radius * 2 + self.stroke * 2, self.radius * 2 + self.stroke * 2)
+        overlay = pygame.Surface(size, pygame.SRCALPHA)
+        rect = overlay.get_rect()
+        arc_rect = rect.inflate(-self.stroke, -self.stroke)
+        start_angle = angle % (2 * math.pi)
+        end_angle = start_angle + math.pi * 1.5
+        pygame.draw.arc(overlay, (255, 215, 0), arc_rect, start_angle, end_angle, self.stroke)
+        target.blit(overlay, overlay.get_rect(center=target.get_rect().center))
+
+
+class ResultOverlay:
+    """Placeholder prize/result card overlay."""
+
+    def __init__(self) -> None:
+        self.title_font = pygame.font.Font(None, 96)
+        self.body_font = pygame.font.Font(None, 48)
+
+    def draw(self, target: pygame.Surface) -> None:
+        overlay = pygame.Surface(target.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+
+        card_width = int(target.get_width() * 0.5)
+        card_height = int(target.get_height() * 0.35)
+        card_rect = pygame.Rect(0, 0, card_width, card_height)
+        card_rect.center = target.get_rect().center
+
+        pygame.draw.rect(overlay, (255, 255, 255, 235), card_rect, border_radius=20)
+        pygame.draw.rect(overlay, (128, 0, 128, 255), card_rect, width=6, border_radius=20)
+
+        title_surface = self.title_font.render("Spin Complete!", True, (40, 0, 70))
+        body_surface = self.body_font.render("Your prize awaits...", True, (40, 0, 70))
+
+        title_rect = title_surface.get_rect(center=(card_rect.centerx, card_rect.centery - 40))
+        body_rect = body_surface.get_rect(center=(card_rect.centerx, card_rect.centery + 40))
+
+        overlay.blit(title_surface, title_rect)
+        overlay.blit(body_surface, body_rect)
+
+        target.blit(overlay, (0, 0))
+
+
+def _capture_phase(
+    cap: "cv2.VideoCapture", config: MirrorConfig, screen_size: tuple[int, int]
+) -> Optional[pygame.Surface]:
+    ret, frame = cap.read()
+    if not ret:
+        return None
+
+    if config.mirror:
+        frame = cv2.flip(frame, 1)
+
+    frame = _rotate_frame(frame, config.rotate_deg)
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    frame_surface = pygame.image.frombuffer(
+        frame_rgb.tobytes(), frame_rgb.shape[1::-1], "RGB"
+    ).convert()
+    if frame_surface.get_size() != screen_size:
+        frame_surface = pygame.transform.smoothscale(frame_surface, screen_size)
+    return frame_surface
+
+
+def _update_phase(
+    events: list[pygame.event.Event], state_machine: MirrorStateMachine
+) -> bool:
+    running = True
+    for event in events:
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                running = False
+            elif event.key == pygame.K_r:
+                state_machine.trigger_roll()
+            elif event.key == pygame.K_f:
+                state_machine.force_result()
+
+    state_machine.update()
+    return running
+
+
+def _render_phase(
+    screen: pygame.Surface,
+    frame_surface: Optional[pygame.Surface],
+    state_machine: MirrorStateMachine,
+    spinner: SpinnerOverlay,
+    result_overlay: ResultOverlay,
+) -> None:
+    if frame_surface is not None:
+        screen.blit(frame_surface, (0, 0))
+    else:
+        screen.fill((0, 0, 0))
+
+    if state_machine.state is MirrorState.ROLLING:
+        spinner.draw(screen, state_machine.time_in_state() * 2 * math.pi)
+    elif state_machine.state is MirrorState.RESULT:
+        result_overlay.draw(screen)
+
+
 def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> None:
     """Run the mirror display loop using the supplied configuration."""
 
@@ -122,32 +254,28 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
     screen = pygame.display.set_mode(screen_size, pygame.FULLSCREEN, display=monitor_index)
     clock = pygame.time.Clock()
 
+    state_machine = MirrorStateMachine(
+        roll_duration=config.roll_duration,
+        result_duration=config.result_duration,
+        cooldown_duration=config.cooldown_duration,
+    )
+    spinner = SpinnerOverlay()
+    result_overlay = ResultOverlay()
+
+    last_frame: Optional[pygame.Surface] = None
+
     try:
         running = True
         while running:
-            ret, frame = cap.read()
-            if not ret:
-                continue
+            events = pygame.event.get()
+            running = _update_phase(events, state_machine)
 
-            if config.mirror:
-                frame = cv2.flip(frame, 1)
+            frame_surface = _capture_phase(cap, config, screen_size)
+            if frame_surface is not None:
+                last_frame = frame_surface
 
-            frame = _rotate_frame(frame, config.rotate_deg)
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            _render_phase(screen, last_frame, state_machine, spinner, result_overlay)
 
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_q):
-                    running = False
-
-            frame_surface = pygame.image.frombuffer(
-                frame_rgb.tobytes(), frame_rgb.shape[1::-1], "RGB"
-            ).convert()
-            if frame_surface.get_size() != screen_size:
-                frame_surface = pygame.transform.smoothscale(frame_surface, screen_size)
-
-            screen.blit(frame_surface, (0, 0))
             pygame.display.flip()
             clock.tick(config.target_fps)
     finally:
