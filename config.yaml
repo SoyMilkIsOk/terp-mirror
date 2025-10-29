@@ -20,6 +20,12 @@ detection:
   min_wave_span: 0.2
   min_wave_velocity: 0.4
   cooldown: 1.5
+  ir_enabled: true
+  ir_target_frequency: 200.0
+  ir_buffer_duration: 0.35
+  ir_score_threshold: 0.6
+  ir_release_threshold: 0.4
+  ir_debounce: 1.0
   roi:
     x: 0.2
     y: 0.1

@@ -37,6 +37,12 @@ class DetectionConfig:
     min_wave_span: float
     min_wave_velocity: float
     cooldown: float
+    ir_enabled: bool = True
+    ir_target_frequency: float = 200.0
+    ir_buffer_duration: float = 0.35
+    ir_score_threshold: float = 0.6
+    ir_release_threshold: float = 0.4
+    ir_debounce: float = 1.0
 
 
 @dataclass
@@ -46,6 +52,9 @@ class DetectionResult:
     wave_detected: bool
     centroid: Optional[tuple[int, int]] = None
     contour_area: float = 0.0
+    ir_score: float = 0.0
+    mode: str = "color"
+    signal_strength: float = 0.0
 
 
 def _ensure_odd(value: int) -> int:
@@ -60,6 +69,9 @@ class WaveDetector:
         self._samples: Deque[tuple[float, float]] = deque()
         self._last_wave_time: float = 0.0
         self._debug_enabled = False
+        self._ir_samples: Deque[tuple[float, float]] = deque()
+        self._ir_active = False
+        self._ir_last_trigger: float = float("-inf")
 
     @property
     def debug_enabled(self) -> bool:
@@ -172,10 +184,85 @@ class WaveDetector:
         else:
             self._samples.clear()
 
-        if self._debug_enabled:
-            self._draw_debug(frame, (roi_x0, roi_y0, roi_x1, roi_y1), best_contour, centroid, best_area, mask)
+        ir_score = self._update_ir_buffer(roi_frame) if self.config.ir_enabled else 0.0
+        mode = "color"
 
-        return DetectionResult(wave_detected=wave_detected, centroid=centroid, contour_area=best_area)
+        color_wave_detected = wave_detected
+        ir_triggered = False
+
+        if self.config.ir_enabled:
+            now = time.monotonic()
+            if ir_score >= self.config.ir_score_threshold:
+                if not self._ir_active:
+                    self._ir_active = True
+                if now - self._ir_last_trigger >= self.config.ir_debounce:
+                    ir_triggered = True
+                    self._ir_last_trigger = now
+            elif ir_score <= self.config.ir_release_threshold:
+                self._ir_active = False
+
+            if self._ir_active:
+                mode = "ir"
+                wave_detected = ir_triggered
+                centroid = None
+            else:
+                mode = "color"
+                wave_detected = color_wave_detected
+        else:
+            wave_detected = color_wave_detected
+
+        signal_strength = ir_score if mode == "ir" else float(best_area)
+
+        if self._debug_enabled:
+            self._draw_debug(
+                frame,
+                (roi_x0, roi_y0, roi_x1, roi_y1),
+                best_contour,
+                centroid,
+                best_area,
+                mask,
+                ir_score,
+                mode,
+            )
+
+        return DetectionResult(
+            wave_detected=wave_detected,
+            centroid=centroid,
+            contour_area=best_area,
+            ir_score=ir_score,
+            mode=mode,
+            signal_strength=signal_strength,
+        )
+
+    def _update_ir_buffer(self, roi_frame: np.ndarray) -> float:
+        now = time.monotonic()
+        gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+        intensity = float(np.mean(gray)) / 255.0
+        self._ir_samples.append((now, intensity))
+        cutoff = now - self.config.ir_buffer_duration
+        while self._ir_samples and self._ir_samples[0][0] < cutoff:
+            self._ir_samples.popleft()
+
+        if len(self._ir_samples) < 3:
+            return 0.0
+
+        timestamps = np.array([sample[0] for sample in self._ir_samples], dtype=np.float64)
+        values = np.array([sample[1] for sample in self._ir_samples], dtype=np.float64)
+        values -= np.mean(values)
+        if np.allclose(values, 0.0):
+            return 0.0
+
+        timestamps -= timestamps[0]
+        angular_frequency = 2 * np.pi * float(self.config.ir_target_frequency)
+        sin_component = np.dot(values, np.sin(angular_frequency * timestamps))
+        cos_component = np.dot(values, np.cos(angular_frequency * timestamps))
+        magnitude = np.sqrt(sin_component**2 + cos_component**2)
+        power = np.sqrt(np.sum(values**2))
+        if power <= 0:
+            return 0.0
+
+        score = float(magnitude / power)
+        return min(1.0, score)
 
     def _update_motion_buffer(self, normalized_x: float) -> bool:
         now = time.monotonic()
@@ -229,6 +316,8 @@ class WaveDetector:
         centroid: Optional[tuple[int, int]],
         area: float,
         mask: np.ndarray,
+        ir_score: float,
+        mode: str,
     ) -> None:
         roi_x0, roi_y0, roi_x1, roi_y1 = roi_bounds
         cv2.rectangle(frame, (roi_x0, roi_y0), (roi_x1, roi_y1), (255, 255, 255), 2)
@@ -257,6 +346,16 @@ class WaveDetector:
             frame,
             f"Area: {int(area)}",
             (20, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            f"IR score: {ir_score:.2f} ({mode})",
+            (20, 100),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
             (0, 255, 0),
