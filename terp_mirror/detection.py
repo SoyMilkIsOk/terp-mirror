@@ -32,12 +32,12 @@ class DetectionConfig:
     morph_kernel: int
     morph_iterations: int
     min_contour_area: float
-    min_circularity: float = 0.65
     roi: DetectionROI
     buffer_duration: float
     min_wave_span: float
     min_wave_velocity: float
     cooldown: float
+    min_circularity: float = 0.65
     ir_enabled: bool = True
     ir_buffer_duration: float = 0.35
     ir_score_threshold: float = 0.6
