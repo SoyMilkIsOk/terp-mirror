@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 import time
-from typing import Deque, Optional
+from typing import Deque, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -37,6 +37,8 @@ class DetectionConfig:
     min_wave_span: float
     min_wave_velocity: float
     cooldown: float
+    min_circularity: float = 0.65
+    processing_interval: float = 0.04
     ir_enabled: bool = True
     ir_buffer_duration: float = 0.35
     ir_score_threshold: float = 0.6
@@ -72,6 +74,20 @@ class WaveDetector:
         self._ir_active = False
         self._ir_last_trigger: float = float("-inf")
         self._paused = False
+        self._last_process_time: float = float("-inf")
+        self._last_result: Optional[DetectionResult] = None
+        self._last_debug_payload: Optional[
+            Tuple[
+                tuple[int, int, int, int],
+                Optional[np.ndarray],
+                Optional[tuple[int, int]],
+                float,
+                float,
+                np.ndarray,
+                float,
+                str,
+            ]
+        ] = None
 
     @property
     def debug_enabled(self) -> bool:
@@ -147,10 +163,8 @@ class WaveDetector:
     def process_frame(self, frame: np.ndarray) -> DetectionResult:
         """Process ``frame`` and return the detection outcome."""
 
-        frame_h, frame_w = frame.shape[:2]
-
         if self._paused:
-            return DetectionResult(
+            paused_result = DetectionResult(
                 wave_detected=False,
                 centroid=None,
                 contour_area=0.0,
@@ -158,6 +172,21 @@ class WaveDetector:
                 mode="paused",
                 signal_strength=0.0,
             )
+            self._last_result = paused_result
+            return paused_result
+
+        frame_h, frame_w = frame.shape[:2]
+        process_start = time.monotonic()
+
+        if (
+            self.config.processing_interval > 0.0
+            and self._last_result is not None
+            and process_start - self._last_process_time < self.config.processing_interval
+        ):
+            if self._debug_enabled and self._last_debug_payload is not None:
+                self._draw_debug(frame, *self._last_debug_payload)
+            return self._last_result
+
         roi_x0 = int(self.config.roi.x * frame_w)
         roi_y0 = int(self.config.roi.y * frame_h)
         roi_x1 = int(min(frame_w, roi_x0 + self.config.roi.width * frame_w))
@@ -180,17 +209,37 @@ class WaveDetector:
 
         best_contour: Optional[np.ndarray] = None
         best_area = 0.0
+        best_circularity = 0.0
+        observed_contour: Optional[np.ndarray] = None
+        observed_area = 0.0
+        observed_circularity = 0.0
 
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area > best_area:
+            perimeter = cv2.arcLength(contour, closed=True)
+            if perimeter <= 0:
+                circularity = 0.0
+            else:
+                circularity = float(4.0 * np.pi * area / (perimeter * perimeter))
+
+            if area > observed_area:
+                observed_area = area
+                observed_contour = contour
+                observed_circularity = circularity
+
+            if (
+                area >= self.config.min_contour_area
+                and circularity >= self.config.min_circularity
+                and area > best_area
+            ):
                 best_area = area
                 best_contour = contour
+                best_circularity = circularity
 
         centroid: Optional[tuple[int, int]] = None
         wave_detected = False
 
-        if best_contour is not None and best_area >= self.config.min_contour_area:
+        if best_contour is not None:
             moments = cv2.moments(best_contour)
             if moments["m00"] != 0:
                 cx = int(moments["m10"] / moments["m00"])
@@ -233,18 +282,26 @@ class WaveDetector:
         signal_strength = ir_score if mode == "ir" else float(best_area)
 
         if self._debug_enabled:
-            self._draw_debug(
-                frame,
+            debug_contour = best_contour if best_contour is not None else observed_contour
+            debug_area = best_area if best_contour is not None else observed_area
+            debug_circularity = (
+                best_circularity if best_contour is not None else observed_circularity
+            )
+            self._last_debug_payload = (
                 (roi_x0, roi_y0, roi_x1, roi_y1),
-                best_contour,
+                debug_contour,
                 centroid,
-                best_area,
+                debug_area,
+                debug_circularity,
                 mask,
                 ir_score,
                 mode,
             )
+            self._draw_debug(frame, *self._last_debug_payload)
+        else:
+            self._last_debug_payload = None
 
-        return DetectionResult(
+        result = DetectionResult(
             wave_detected=wave_detected,
             centroid=centroid,
             contour_area=best_area,
@@ -252,6 +309,9 @@ class WaveDetector:
             mode=mode,
             signal_strength=signal_strength,
         )
+        self._last_process_time = process_start
+        self._last_result = result
+        return result
 
     def _update_ir_intensity(self, roi_frame: np.ndarray) -> float:
         gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
@@ -319,6 +379,7 @@ class WaveDetector:
         contour: Optional[np.ndarray],
         centroid: Optional[tuple[int, int]],
         area: float,
+        circularity: float,
         mask: np.ndarray,
         ir_score: float,
         mode: str,
@@ -358,8 +419,18 @@ class WaveDetector:
         )
         cv2.putText(
             frame,
-            f"IR score: {ir_score:.2f} ({mode})",
+            f"Circularity: {circularity:.2f} (min {self.config.min_circularity:.2f})",
             (20, 100),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            f"IR score: {ir_score:.2f} ({mode})",
+            (20, 130),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
             (0, 255, 0),
