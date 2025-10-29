@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
@@ -26,6 +27,7 @@ from .calibration import (
     load_calibration_mapping,
     map_point_to_screen,
 )
+from .prizes import PrizeManager, PrizeStockConfig
 from .states import MirrorState, MirrorStateMachine
 
 
@@ -50,6 +52,7 @@ class MirrorConfig:
     cooldown_duration: float
     detection: DetectionConfig
     calibration: CalibrationConfig
+    prizes: PrizeStockConfig
     dry_run: bool = False
 
 
@@ -104,9 +107,10 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         roll_duration=roll_duration,
         result_duration=result_duration,
         cooldown_duration=cooldown_duration,
-        dry_run=bool(data.get("dry_run", False)),
         detection=detection_cfg,
         calibration=calibration_cfg,
+        prizes=_parse_prize_config(data.get("prizes", {})),
+        dry_run=bool(data.get("dry_run", False)),
     )
 
 
@@ -160,7 +164,6 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
         min_wave_span = float(data.get("min_wave_span", 0.2))
         min_wave_velocity = float(data.get("min_wave_velocity", 0.4))
         cooldown = float(data.get("cooldown", 1.5))
-        ir_target_frequency = float(data.get("ir_target_frequency", 200.0))
         ir_buffer_duration = float(data.get("ir_buffer_duration", 0.35))
         ir_score_threshold = float(data.get("ir_score_threshold", 0.6))
         ir_release_threshold = float(data.get("ir_release_threshold", 0.4))
@@ -178,8 +181,6 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
         raise MirrorConfigError("Detection.min_wave_velocity must be positive.")
     if cooldown < 0:
         raise MirrorConfigError("Detection.cooldown must be zero or greater.")
-    if ir_target_frequency <= 0:
-        raise MirrorConfigError("Detection.ir_target_frequency must be positive.")
     if ir_buffer_duration <= 0:
         raise MirrorConfigError("Detection.ir_buffer_duration must be positive.")
     if not 0 <= ir_score_threshold <= 1:
@@ -204,12 +205,44 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
         min_wave_velocity=min_wave_velocity,
         cooldown=cooldown,
         ir_enabled=bool(data.get("ir_enabled", True)),
-        ir_target_frequency=ir_target_frequency,
         ir_buffer_duration=ir_buffer_duration,
         ir_score_threshold=ir_score_threshold,
         ir_release_threshold=ir_release_threshold,
         ir_debounce=ir_debounce,
     )
+
+
+def _parse_prize_config(data: dict) -> PrizeStockConfig:
+    if not isinstance(data, dict):
+        raise MirrorConfigError("Prizes configuration must be a mapping.")
+
+    track = bool(data.get("track_stock", False))
+    counts_raw = data.get("stock", {})
+    if counts_raw is None:
+        counts_raw = {}
+    if not isinstance(counts_raw, dict):
+        raise MirrorConfigError("Prizes.stock must be a mapping of prize names to counts.")
+
+    counts: dict[str, int] = {}
+    for name, value in counts_raw.items():
+        try:
+            counts[str(name)] = max(0, int(value))
+        except (TypeError, ValueError) as exc:
+            raise MirrorConfigError(
+                "Prizes.stock values must be integers greater than or equal to zero."
+            ) from exc
+
+    grand_raw = data.get("grand_prize")
+    grand_value: Optional[int]
+    if grand_raw is None:
+        grand_value = None
+    else:
+        try:
+            grand_value = max(0, int(grand_raw))
+        except (TypeError, ValueError) as exc:
+            raise MirrorConfigError("Prizes.grand_prize must be a positive integer.") from exc
+
+    return PrizeStockConfig(track_stock=track, counts=counts, grand_prize=grand_value)
 
 
 def _parse_calibration_config(data: dict, base_dir: Path) -> CalibrationConfig:
@@ -269,6 +302,32 @@ def _resolve_display_size(monitor_index: int) -> tuple[int, int]:
         # Fall back to the primary monitor size if pygame did not report all displays.
         monitor_index = 0
     return desktop_sizes[monitor_index]
+
+
+@dataclass
+class RuntimeSettings:
+    """Mutable runtime settings adjusted from the control panel."""
+
+    target_fps: int
+
+
+@dataclass
+class RuntimeToggles:
+    """Flags mutated in response to operator hotkeys."""
+
+    diagnostics_visible: bool = False
+
+
+@dataclass
+class DiagnosticsData:
+    """Aggregate data presented in the diagnostics overlay."""
+
+    detection: Optional[DetectionResult]
+    fps: float
+    state: MirrorState
+    detection_paused: bool
+    last_trigger_latency: Optional[float]
+    camera_status: str
 
 
 class SpinnerOverlay:
@@ -358,46 +417,504 @@ class DiagnosticsOverlay:
     """Render detection diagnostics (mode, signal strength, scores)."""
 
     def __init__(self) -> None:
-        self.font = pygame.font.Font(None, 36)
+        self.font = pygame.font.Font(None, 32)
+        self.sub_font = pygame.font.Font(None, 26)
 
-    def draw(self, target: pygame.Surface, detection: Optional[DetectionResult]) -> None:
-        if detection is None:
+    def draw(self, target: pygame.Surface, data: Optional[DiagnosticsData]) -> None:
+        if data is None:
             return
 
-        lines = [f"Detection mode: {detection.mode.upper()}"]
-        if detection.mode == "ir":
-            lines.append(f"IR score: {detection.ir_score:.2f}")
-            signal_text = f"Signal: {detection.signal_strength:.2f}"
+        lines: list[str] = []
+        lines.append(f"FPS: {data.fps:5.1f}")
+        lines.append(f"State: {data.state.value}")
+
+        if data.camera_status:
+            lines.append(f"Camera: {data.camera_status}")
+
+        if data.detection_paused:
+            lines.append("Detection: PAUSED")
+        elif data.detection is None:
+            lines.append("Detection: awaiting signal")
         else:
-            lines.append(f"Contour area: {int(detection.contour_area)}")
-            signal_text = f"Signal: {int(detection.signal_strength)}"
-        lines.append(signal_text)
-        lines.append(f"Wave detected: {'YES' if detection.wave_detected else 'no'}")
+            det = data.detection
+            lines.append(f"Detection mode: {det.mode.upper()}")
+            if det.mode == "ir":
+                lines.append(f"IR intensity: {det.ir_score:.2f}")
+                lines.append(f"Signal: {det.signal_strength:.2f}")
+            else:
+                lines.append(f"Contour area: {int(det.contour_area)}")
+                lines.append(f"Signal: {int(det.signal_strength)}")
+            lines.append(f"Wave detected: {'YES' if det.wave_detected else 'no'}")
+
+        if data.last_trigger_latency is not None:
+            lines.append(f"Last trigger latency: {data.last_trigger_latency * 1000:.0f} ms")
 
         y = 20
-        for line in lines:
-            surface = self.font.render(line, True, (255, 255, 255))
+        for idx, line in enumerate(lines):
+            font = self.font if idx < 2 else self.sub_font
+            surface = font.render(line, True, (255, 255, 255))
             target.blit(surface, (20, y))
             y += surface.get_height() + 6
 
 
+class PrizeStatusOverlay:
+    """Display prize selection state and stock levels."""
+
+    def __init__(self) -> None:
+        self.title_font = pygame.font.Font(None, 32)
+        self.body_font = pygame.font.Font(None, 26)
+
+    def draw(self, target: pygame.Surface, manager: PrizeManager) -> None:
+        width = int(target.get_width() * 0.32)
+        height = 160
+        overlay = pygame.Surface((width, height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        pygame.draw.rect(overlay, (90, 0, 140, 220), overlay.get_rect(), border_radius=12)
+
+        selected = manager.current_selection()
+        stock = manager.stock_for(selected)
+        queued = manager.queued_manual
+        lines = [
+            f"Selected: {selected}",
+            f"Stock: {'∞' if stock is None else stock}",
+            f"Queued: {queued or 'auto'}",
+            "Hotkeys: [ ] select | +/- stock | G queue",
+        ]
+
+        y = 14
+        for idx, line in enumerate(lines):
+            font = self.title_font if idx == 0 else self.body_font
+            text = font.render(line, True, (255, 255, 255))
+            overlay.blit(text, (16, y))
+            y += text.get_height() + 6
+
+        target.blit(overlay, (16, target.get_height() - height - 20))
+
+
+class ControlItem:
+    """Single adjustable value rendered inside the control panel."""
+
+    def __init__(
+        self,
+        label: str,
+        getter,
+        setter,
+        *,
+        step: float,
+        fmt: str = "{:.2f}",
+        minimum: Optional[float] = None,
+        maximum: Optional[float] = None,
+        coerce=lambda value: value,
+    ) -> None:
+        self.label = label
+        self._getter = getter
+        self._setter = setter
+        self.step = step
+        self.fmt = fmt
+        self.minimum = minimum
+        self.maximum = maximum
+        self._coerce = coerce
+
+    def value(self):
+        return self._getter()
+
+    def formatted(self) -> str:
+        try:
+            return self.fmt.format(self.value())
+        except (ValueError, TypeError):
+            return str(self.value())
+
+    def adjust(self, delta: int) -> None:
+        if self._setter is None:
+            return
+        raw = float(self.value())
+        new_value = raw + delta * self.step
+        if self.minimum is not None:
+            new_value = max(self.minimum, new_value)
+        if self.maximum is not None:
+            new_value = min(self.maximum, new_value)
+        coerced = self._coerce(new_value)
+        self._setter(coerced)
+
+
+class ControlPanel:
+    """Interactive panel allowing live configuration tweaks."""
+
+    def __init__(
+        self,
+        settings: RuntimeSettings,
+        state_machine: MirrorStateMachine,
+        detector: Optional[WaveDetector],
+    ) -> None:
+        self.settings = settings
+        self.state_machine = state_machine
+        self.detector = detector
+        self.font = pygame.font.Font(None, 26)
+        self.header_font = pygame.font.Font(None, 32)
+        self.items: list[ControlItem] = []
+        self.selected_index = 0
+        self._build_items()
+
+    def _build_items(self) -> None:
+        self.items = [
+            ControlItem(
+                "Target FPS",
+                getter=lambda: self.settings.target_fps,
+                setter=lambda value: setattr(self.settings, "target_fps", int(value)),
+                step=1,
+                fmt="{:d}",
+                minimum=15,
+                maximum=240,
+                coerce=lambda value: int(round(value)),
+            ),
+            ControlItem(
+                "Roll duration",
+                getter=lambda: self.state_machine.roll_duration,
+                setter=lambda value: setattr(self.state_machine, "roll_duration", float(value)),
+                step=0.25,
+                minimum=0.5,
+            ),
+            ControlItem(
+                "Result duration",
+                getter=lambda: self.state_machine.result_duration,
+                setter=lambda value: setattr(self.state_machine, "result_duration", float(value)),
+                step=0.25,
+                minimum=0.5,
+            ),
+            ControlItem(
+                "Cooldown duration",
+                getter=lambda: self.state_machine.cooldown_duration,
+                setter=lambda value: setattr(self.state_machine, "cooldown_duration", float(value)),
+                step=0.25,
+                minimum=0.0,
+            ),
+        ]
+
+        if self.detector is None:
+            return
+
+        cfg = self.detector.config
+        self.items.extend(
+            [
+                ControlItem(
+                    "Min contour area",
+                    getter=lambda cfg=cfg: cfg.min_contour_area,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "min_contour_area", float(value)),
+                    step=100.0,
+                    minimum=0.0,
+                ),
+                ControlItem(
+                    "Buffer duration",
+                    getter=lambda cfg=cfg: cfg.buffer_duration,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "buffer_duration", float(value)),
+                    step=0.05,
+                    minimum=0.1,
+                ),
+                ControlItem(
+                    "Min wave span",
+                    getter=lambda cfg=cfg: cfg.min_wave_span,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "min_wave_span", float(value)),
+                    step=0.02,
+                    minimum=0.05,
+                ),
+                ControlItem(
+                    "Min wave velocity",
+                    getter=lambda cfg=cfg: cfg.min_wave_velocity,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "min_wave_velocity", float(value)),
+                    step=0.05,
+                    minimum=0.05,
+                ),
+                ControlItem(
+                    "Detection cooldown",
+                    getter=lambda cfg=cfg: cfg.cooldown,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "cooldown", float(value)),
+                    step=0.1,
+                    minimum=0.0,
+                ),
+                ControlItem(
+                    "IR threshold",
+                    getter=lambda cfg=cfg: cfg.ir_score_threshold,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "ir_score_threshold", float(value)),
+                    step=0.02,
+                    minimum=0.0,
+                    maximum=1.0,
+                ),
+                ControlItem(
+                    "IR release",
+                    getter=lambda cfg=cfg: cfg.ir_release_threshold,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "ir_release_threshold", float(value)),
+                    step=0.02,
+                    minimum=0.0,
+                    maximum=1.0,
+                ),
+                ControlItem(
+                    "IR debounce",
+                    getter=lambda cfg=cfg: cfg.ir_debounce,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "ir_debounce", float(value)),
+                    step=0.1,
+                    minimum=0.0,
+                ),
+                ControlItem(
+                    "ROI X",
+                    getter=lambda cfg=cfg: cfg.roi.x,
+                    setter=lambda value, cfg=cfg: self._set_roi_value(cfg, "x", float(value)),
+                    step=0.01,
+                    minimum=0.0,
+                    maximum=1.0,
+                ),
+                ControlItem(
+                    "ROI Y",
+                    getter=lambda cfg=cfg: cfg.roi.y,
+                    setter=lambda value, cfg=cfg: self._set_roi_value(cfg, "y", float(value)),
+                    step=0.01,
+                    minimum=0.0,
+                    maximum=1.0,
+                ),
+                ControlItem(
+                    "ROI width",
+                    getter=lambda cfg=cfg: cfg.roi.width,
+                    setter=lambda value, cfg=cfg: self._set_roi_value(cfg, "width", float(value)),
+                    step=0.02,
+                    minimum=0.1,
+                    maximum=1.0,
+                ),
+                ControlItem(
+                    "ROI height",
+                    getter=lambda cfg=cfg: cfg.roi.height,
+                    setter=lambda value, cfg=cfg: self._set_roi_value(cfg, "height", float(value)),
+                    step=0.02,
+                    minimum=0.1,
+                    maximum=1.0,
+                ),
+                ControlItem(
+                    "HSV H lower",
+                    getter=lambda cfg=cfg: cfg.hsv_lower[0],
+                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "lower", 0, int(round(value))),
+                    step=1,
+                    fmt="{:d}",
+                    minimum=0,
+                    maximum=179,
+                    coerce=lambda value: int(round(value)),
+                ),
+                ControlItem(
+                    "HSV H upper",
+                    getter=lambda cfg=cfg: cfg.hsv_upper[0],
+                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "upper", 0, int(round(value))),
+                    step=1,
+                    fmt="{:d}",
+                    minimum=0,
+                    maximum=179,
+                    coerce=lambda value: int(round(value)),
+                ),
+                ControlItem(
+                    "HSV S lower",
+                    getter=lambda cfg=cfg: cfg.hsv_lower[1],
+                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "lower", 1, int(round(value))),
+                    step=2,
+                    fmt="{:d}",
+                    minimum=0,
+                    maximum=255,
+                    coerce=lambda value: int(round(value)),
+                ),
+                ControlItem(
+                    "HSV S upper",
+                    getter=lambda cfg=cfg: cfg.hsv_upper[1],
+                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "upper", 1, int(round(value))),
+                    step=2,
+                    fmt="{:d}",
+                    minimum=0,
+                    maximum=255,
+                    coerce=lambda value: int(round(value)),
+                ),
+                ControlItem(
+                    "HSV V lower",
+                    getter=lambda cfg=cfg: cfg.hsv_lower[2],
+                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "lower", 2, int(round(value))),
+                    step=2,
+                    fmt="{:d}",
+                    minimum=0,
+                    maximum=255,
+                    coerce=lambda value: int(round(value)),
+                ),
+                ControlItem(
+                    "HSV V upper",
+                    getter=lambda cfg=cfg: cfg.hsv_upper[2],
+                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "upper", 2, int(round(value))),
+                    step=2,
+                    fmt="{:d}",
+                    minimum=0,
+                    maximum=255,
+                    coerce=lambda value: int(round(value)),
+                ),
+            ]
+        )
+
+    @staticmethod
+    def _set_hsv(config: DetectionConfig, bound: str, channel: int, value: int) -> None:
+        lower = list(config.hsv_lower)
+        upper = list(config.hsv_upper)
+        if bound == "lower":
+            lower[channel] = value
+        else:
+            upper[channel] = value
+        if channel == 0:
+            lower[channel] = max(0, min(lower[channel], upper[channel]))
+            upper[channel] = max(lower[channel], min(179, upper[channel]))
+        else:
+            lower[channel] = max(0, min(lower[channel], upper[channel]))
+            upper[channel] = max(lower[channel], min(255, upper[channel]))
+        config.hsv_lower = tuple(lower)
+        config.hsv_upper = tuple(upper)
+
+    @staticmethod
+    def _set_roi_value(config: DetectionConfig, attribute: str, value: float) -> None:
+        value = float(value)
+        if attribute in {"width", "height"}:
+            value = max(0.05, min(1.0, value))
+        else:
+            value = max(0.0, min(1.0, value))
+
+        setattr(config.roi, attribute, value)
+        config.roi.x = max(0.0, min(config.roi.x, 1.0 - config.roi.width))
+        config.roi.y = max(0.0, min(config.roi.y, 1.0 - config.roi.height))
+
+    def move_selection(self, delta: int) -> None:
+        if not self.items:
+            return
+        self.selected_index = (self.selected_index + delta) % len(self.items)
+
+    def adjust_selection(self, delta: int) -> None:
+        if not self.items:
+            return
+        self.items[self.selected_index].adjust(delta)
+
+    def draw(self, target: pygame.Surface) -> None:
+        if not self.items:
+            return
+
+        width = int(target.get_width() * 0.28)
+        height = min(target.get_height() - 60, 80 + len(self.items) * 26)
+        overlay = pygame.Surface((width, height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        pygame.draw.rect(overlay, (0, 90, 120, 210), overlay.get_rect(), border_radius=12)
+
+        y = 16
+        header = self.header_font.render("Controls Panel", True, (255, 255, 255))
+        overlay.blit(header, (16, y))
+        y += header.get_height() + 6
+        instruction = self.font.render("↑↓ select | ←→ adjust", True, (220, 220, 220))
+        overlay.blit(instruction, (16, y))
+        y += instruction.get_height() + 10
+
+        for idx, item in enumerate(self.items):
+            text = f"{item.label}: {item.formatted()}"
+            color = (255, 230, 180) if idx == self.selected_index else (255, 255, 255)
+            surface = self.font.render(text, True, color)
+            overlay.blit(surface, (20, y))
+            y += surface.get_height() + 4
+
+        target.blit(overlay, (target.get_width() - width - 16, 16))
+
+
+class CameraManager:
+    """Robust wrapper around ``cv2.VideoCapture`` with retry support."""
+
+    def __init__(self, camera_index: int, *, enabled: bool = True, retry_interval: float = 2.5) -> None:
+        self.camera_index = camera_index
+        self.enabled = enabled
+        self.retry_interval = retry_interval
+        self._capture: Optional["cv2.VideoCapture"] = None
+        self._last_attempt: float = 0.0
+        self._status: str = "disabled" if not enabled else "initializing"
+        if self.enabled:
+            self._open()
+
+    def _open(self) -> None:
+        self.close()
+        self._last_attempt = time.monotonic()
+        capture = cv2.VideoCapture(self.camera_index)
+        if capture.isOpened():
+            self._capture = capture
+            self._status = "connected"
+        else:
+            self._status = "retrying"
+
+    def read(self) -> Optional[object]:
+        if not self.enabled:
+            self._status = "dry-run"
+            return None
+
+        if self._capture is None:
+            if time.monotonic() - self._last_attempt >= self.retry_interval:
+                self._open()
+            return None
+
+        ret, frame = self._capture.read()
+        if not ret or frame is None:
+            self.close()
+            self._status = "lost"
+            self._last_attempt = time.monotonic()
+            return None
+
+        self._status = "connected"
+        return frame
+
+    def close(self) -> None:
+        if self._capture is not None:
+            self._capture.release()
+            self._capture = None
+
+    def status_text(self) -> str:
+        if self._status == "connected":
+            return ""
+        if self._status == "dry-run":
+            return "Dry-run mode (camera disabled)"
+        if self._status == "retrying":
+            return "Camera unavailable, retrying..."
+        if self._status == "initializing":
+            return "Connecting to camera..."
+        if self._status == "lost":
+            remaining = max(0.0, self.retry_interval - (time.monotonic() - self._last_attempt))
+            return f"Camera lost. Retrying in {remaining:.1f}s"
+        return self._status
+
+
+class CameraStatusOverlay:
+    """Prominently display camera connection issues."""
+
+    def __init__(self) -> None:
+        self.font = pygame.font.Font(None, 32)
+
+    def draw(self, target: pygame.Surface, message: str) -> None:
+        if not message:
+            return
+
+        text_surface = self.font.render(message, True, (255, 200, 200))
+        padding = 14
+        background = pygame.Surface(
+            (text_surface.get_width() + padding * 2, text_surface.get_height() + padding),
+            pygame.SRCALPHA,
+        )
+        background.fill((120, 0, 0, 180))
+        rect = background.get_rect(center=(target.get_width() // 2, 40))
+        target.blit(background, rect)
+        target.blit(text_surface, text_surface.get_rect(center=rect.center))
+
+
 def _capture_phase(
-    cap: Optional["cv2.VideoCapture"],
+    camera: Optional[CameraManager],
     config: MirrorConfig,
     screen_size: tuple[int, int],
     detector: Optional[WaveDetector],
 ) -> tuple[Optional[pygame.Surface], Optional[DetectionResult], Optional[tuple[int, int]]]:
-    if cap is None:
+    if camera is None:
         return None, None, None
 
-    ret, frame = cap.read()
-    if not ret:
+    raw_frame = camera.read()
+    if raw_frame is None:
         return None, None, None
 
-    if config.mirror:
-        frame = cv2.flip(frame, 1)
-
-    frame = _rotate_frame(frame, config.rotate_deg)
+    frame = _rotate_frame(raw_frame, config.rotate_deg)
 
     detection_result: Optional[DetectionResult] = None
     if detector is not None:
@@ -418,47 +935,113 @@ def _update_phase(
     events: list[pygame.event.Event],
     state_machine: MirrorStateMachine,
     detector: Optional[WaveDetector],
-) -> bool:
+    prize_manager: PrizeManager,
+    control_panel: ControlPanel,
+    toggles: RuntimeToggles,
+) -> tuple[bool, bool]:
     running = True
+    manual_triggered = False
+
     for event in events:
         if event.type == pygame.QUIT:
             running = False
-        elif event.type == pygame.KEYDOWN:
-            if event.key in (pygame.K_ESCAPE, pygame.K_q):
-                running = False
-            elif event.key == pygame.K_r:
-                state_machine.trigger_roll()
-            elif event.key == pygame.K_f:
-                state_machine.force_result()
-            elif event.key == pygame.K_g:
+            continue
+
+        if event.type != pygame.KEYDOWN:
+            continue
+
+        handled = False
+        if event.key in (pygame.K_ESCAPE, pygame.K_q):
+            running = False
+            handled = True
+        elif event.key == pygame.K_r:
+            state_machine.trigger_roll()
+            handled = True
+        elif event.key == pygame.K_f:
+            state_machine.force_result()
+            handled = True
+        elif event.key == pygame.K_g:
+            if event.mod & pygame.KMOD_CTRL:
                 state_machine.force_grand_prize()
-            if detector is not None:
-                detector.handle_key(event.key)
+            else:
+                selection = prize_manager.queue_manual_selection()
+                if selection is not None:
+                    state_machine.queue_manual_prize(selection)
+                    print(f"[prizes] Queued manual prize: {selection}")
+                    manual_triggered = True
+            handled = True
+        elif event.key == pygame.K_p and detector is not None:
+            detector.toggle_pause()
+            handled = True
+        elif event.key == pygame.K_d:
+            toggles.diagnostics_visible = not toggles.diagnostics_visible
+            handled = True
+        elif event.key == pygame.K_LEFTBRACKET:
+            prize_manager.cycle_selection(-1)
+            print(f"[prizes] Selected prize: {prize_manager.current_selection()}")
+            handled = True
+        elif event.key == pygame.K_RIGHTBRACKET:
+            prize_manager.cycle_selection(1)
+            print(f"[prizes] Selected prize: {prize_manager.current_selection()}")
+            handled = True
+        elif event.unicode == "+":
+            selection = prize_manager.current_selection()
+            new_value = prize_manager.adjust_stock(selection, 1)
+            if new_value is not None:
+                print(f"[prizes] {selection} stock increased to {new_value}")
+            handled = True
+        elif event.unicode == "-":
+            selection = prize_manager.current_selection()
+            new_value = prize_manager.adjust_stock(selection, -1)
+            if new_value is not None:
+                print(f"[prizes] {selection} stock decreased to {new_value}")
+            handled = True
+        elif event.key == pygame.K_UP:
+            control_panel.move_selection(-1)
+            handled = True
+        elif event.key == pygame.K_DOWN:
+            control_panel.move_selection(1)
+            handled = True
+        elif event.key == pygame.K_LEFT:
+            control_panel.adjust_selection(-1)
+            handled = True
+        elif event.key == pygame.K_RIGHT:
+            control_panel.adjust_selection(1)
+            handled = True
+
+        if detector is not None and not handled:
+            detector.handle_key(event.key)
 
     state_machine.update()
-    return running
+    return running, manual_triggered
 
 
 def _render_phase(
-    screen: pygame.Surface,
+    target: pygame.Surface,
     frame_surface: Optional[pygame.Surface],
     state_machine: MirrorStateMachine,
     spinner: SpinnerOverlay,
     result_overlay: ResultOverlay,
     prompt_overlay: PromptOverlay,
     diagnostics_overlay: DiagnosticsOverlay,
+    diagnostics_data: Optional[DiagnosticsData],
+    prize_overlay: PrizeStatusOverlay,
+    control_panel: ControlPanel,
+    camera_overlay: CameraStatusOverlay,
     detection: Optional[DetectionResult],
     frame_size: Optional[tuple[int, int]],
     calibration: Optional[CalibrationMapping],
     calibration_config: CalibrationConfig,
+    camera_status: str,
+    detection_paused: bool,
 ) -> None:
     if frame_surface is not None:
-        screen.blit(frame_surface, (0, 0))
+        target.blit(frame_surface, (0, 0))
     else:
-        screen.fill((0, 0, 0))
+        target.fill((0, 0, 0))
 
-    screen_size = screen.get_size()
-    rect = screen.get_rect()
+    screen_size = target.get_size()
+    rect = target.get_rect()
 
     default_prompt_anchor = (rect.centerx, max(80, rect.centery - rect.height // 4))
     default_spinner_anchor = rect.center
@@ -502,14 +1085,14 @@ def _render_phase(
         calibration_config.apply_result, calibrated_result_anchor, default_result_anchor
     )
 
-    if state_machine.state is MirrorState.IDLE:
-        prompt_overlay.draw(screen, "Wave to roll", prompt_anchor, "Raise your hand to start")
+    if detection_paused:
+        prompt_overlay.draw(target, "Detection paused", prompt_anchor, "Press P to resume")
+    elif state_machine.state is MirrorState.IDLE:
+        prompt_overlay.draw(target, "Wave to roll", prompt_anchor, "Raise your hand to start")
     elif state_machine.state is MirrorState.ROLLING:
-        spinner.draw(screen, state_machine.time_in_state() * 2 * math.pi, spinner_anchor)
+        spinner.draw(target, state_machine.time_in_state() * 2 * math.pi, spinner_anchor)
     elif state_machine.state is MirrorState.RESULT:
-        result_overlay.draw(screen, state_machine.current_prize, result_anchor)
-
-    diagnostics_overlay.draw(screen, detection)
+        result_overlay.draw(target, state_machine.current_prize, result_anchor)
 
     if detection is not None and detection.centroid is not None and frame_size is not None:
         try:
@@ -517,7 +1100,14 @@ def _render_phase(
         except CalibrationError:
             mapped_point = None
         if mapped_point is not None:
-            pygame.draw.circle(screen, (255, 0, 0), mapped_point, 14, 3)
+            pygame.draw.circle(target, (255, 0, 0), mapped_point, 14, 3)
+
+    prize_overlay.draw(target, state_machine.prize_manager)
+    control_panel.draw(target)
+    camera_overlay.draw(target, camera_status)
+
+    if diagnostics_data is not None:
+        diagnostics_overlay.draw(target, diagnostics_data)
 
 
 def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> None:
@@ -526,12 +1116,6 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
     monitor_index = monitor_override if monitor_override is not None else config.monitor_index
     camera_index = config.camera_index
     dry_run = config.dry_run
-
-    cap: Optional["cv2.VideoCapture"] = None
-    if not dry_run:
-        cap = cv2.VideoCapture(camera_index)
-        if not cap.isOpened():
-            raise RuntimeError(f"Unable to open camera index {camera_index}.")
 
     pygame.init()
     pygame.display.set_caption("Terp Mirror")
@@ -546,11 +1130,21 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
         cooldown_duration=config.cooldown_duration,
         dry_run=dry_run,
     )
+    prize_manager = PrizeManager(stock_config=config.prizes, dry_run=dry_run)
+    state_machine.prize_manager = prize_manager
     detector = WaveDetector(config.detection) if config.detection is not None else None
+    settings = RuntimeSettings(target_fps=config.target_fps)
+    control_panel = ControlPanel(settings, state_machine, detector)
     spinner = SpinnerOverlay()
     result_overlay = ResultOverlay()
     prompt_overlay = PromptOverlay()
     diagnostics_overlay = DiagnosticsOverlay()
+    camera_overlay = CameraStatusOverlay()
+    prize_overlay = PrizeStatusOverlay()
+    toggles = RuntimeToggles()
+    camera_manager = CameraManager(camera_index, enabled=not dry_run)
+    composite_surface = pygame.Surface(screen_size)
+
     calibration_mapping: Optional[CalibrationMapping] = None
     calibration_warning_emitted = False
 
@@ -568,20 +1162,23 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
     last_detection: Optional[DetectionResult] = None
     last_frame_size: Optional[tuple[int, int]] = None
     active_calibration: Optional[CalibrationMapping] = None
+    last_trigger_latency: Optional[float] = None
+    last_wave_trigger: Optional[float] = None
 
     try:
         running = True
         while running:
             events = pygame.event.get()
-            running = _update_phase(events, state_machine, detector)
+            running, manual_triggered = _update_phase(
+                events, state_machine, detector, prize_manager, control_panel, toggles
+            )
 
             frame_surface, detection_result, frame_size = _capture_phase(
-                cap, config, screen_size, detector
+                camera_manager, config, screen_size, detector
             )
             if frame_surface is not None:
                 last_frame = frame_surface
-            if detection_result is not None:
-                last_detection = detection_result
+            last_detection = detection_result
             if frame_size is not None:
                 last_frame_size = frame_size
                 if calibration_mapping is not None and active_calibration is None:
@@ -594,32 +1191,72 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
                         )
                         calibration_warning_emitted = True
 
+            if manual_triggered:
+                last_trigger_latency = 0.0
+                last_wave_trigger = None
+
             if (
                 detection_result is not None
                 and detection_result.wave_detected
                 and state_machine.state is MirrorState.IDLE
+                and detector is not None
+                and not detector.paused
             ):
+                last_wave_trigger = time.monotonic()
                 state_machine.trigger_roll()
+                last_trigger_latency = (
+                    state_machine.last_trigger_timestamp - last_wave_trigger
+                    if last_wave_trigger is not None
+                    else None
+                )
+                last_wave_trigger = None
+
+            camera_status = camera_manager.status_text()
+            diagnostics_data: Optional[DiagnosticsData] = None
+            if toggles.diagnostics_visible:
+                diagnostics_data = DiagnosticsData(
+                    detection=last_detection,
+                    fps=clock.get_fps(),
+                    state=state_machine.state,
+                    detection_paused=detector.paused if detector is not None else False,
+                    last_trigger_latency=last_trigger_latency,
+                    camera_status=camera_status,
+                )
+
+            target_surface = composite_surface
+            if last_frame is None:
+                target_surface.fill((0, 0, 0))
 
             _render_phase(
-                screen,
+                target_surface,
                 last_frame,
                 state_machine,
                 spinner,
                 result_overlay,
                 prompt_overlay,
                 diagnostics_overlay,
+                diagnostics_data,
+                prize_overlay,
+                control_panel,
+                camera_overlay,
                 last_detection,
                 last_frame_size,
                 active_calibration,
                 config.calibration,
+                camera_status,
+                detector.paused if detector is not None else False,
             )
 
+            if config.mirror:
+                flipped = pygame.transform.flip(target_surface, True, False)
+                screen.blit(flipped, (0, 0))
+            else:
+                screen.blit(target_surface, (0, 0))
+
             pygame.display.flip()
-            clock.tick(config.target_fps)
+            clock.tick(settings.target_fps)
     finally:
-        if cap is not None:
-            cap.release()
+        camera_manager.close()
         pygame.quit()
 
 

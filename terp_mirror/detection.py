@@ -38,7 +38,6 @@ class DetectionConfig:
     min_wave_velocity: float
     cooldown: float
     ir_enabled: bool = True
-    ir_target_frequency: float = 200.0
     ir_buffer_duration: float = 0.35
     ir_score_threshold: float = 0.6
     ir_release_threshold: float = 0.4
@@ -72,14 +71,24 @@ class WaveDetector:
         self._ir_samples: Deque[tuple[float, float]] = deque()
         self._ir_active = False
         self._ir_last_trigger: float = float("-inf")
+        self._paused = False
 
     @property
     def debug_enabled(self) -> bool:
         return self._debug_enabled
 
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
     def toggle_debug(self) -> None:
         self._debug_enabled = not self._debug_enabled
         print(f"[detector] Debug overlay {'enabled' if self._debug_enabled else 'disabled'}")
+
+    def toggle_pause(self) -> None:
+        self._paused = not self._paused
+        status = "paused" if self._paused else "resumed"
+        print(f"[detector] Detection {status} by operator hotkey")
 
     def handle_key(self, key: int) -> None:
         """Handle key presses for tuning HSV thresholds at runtime."""
@@ -139,6 +148,16 @@ class WaveDetector:
         """Process ``frame`` and return the detection outcome."""
 
         frame_h, frame_w = frame.shape[:2]
+
+        if self._paused:
+            return DetectionResult(
+                wave_detected=False,
+                centroid=None,
+                contour_area=0.0,
+                ir_score=0.0,
+                mode="paused",
+                signal_strength=0.0,
+            )
         roi_x0 = int(self.config.roi.x * frame_w)
         roi_y0 = int(self.config.roi.y * frame_h)
         roi_x1 = int(min(frame_w, roi_x0 + self.config.roi.width * frame_w))
@@ -184,7 +203,7 @@ class WaveDetector:
         else:
             self._samples.clear()
 
-        ir_score = self._update_ir_buffer(roi_frame) if self.config.ir_enabled else 0.0
+        ir_score = self._update_ir_intensity(roi_frame) if self.config.ir_enabled else 0.0
         mode = "color"
 
         color_wave_detected = wave_detected
@@ -234,35 +253,20 @@ class WaveDetector:
             signal_strength=signal_strength,
         )
 
-    def _update_ir_buffer(self, roi_frame: np.ndarray) -> float:
-        now = time.monotonic()
+    def _update_ir_intensity(self, roi_frame: np.ndarray) -> float:
         gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
         intensity = float(np.mean(gray)) / 255.0
-        self._ir_samples.append((now, intensity))
-        cutoff = now - self.config.ir_buffer_duration
+        timestamp = time.monotonic()
+        self._ir_samples.append((timestamp, intensity))
+        cutoff = timestamp - self.config.ir_buffer_duration
         while self._ir_samples and self._ir_samples[0][0] < cutoff:
             self._ir_samples.popleft()
 
-        if len(self._ir_samples) < 3:
-            return 0.0
+        if not self._ir_samples:
+            return intensity
 
-        timestamps = np.array([sample[0] for sample in self._ir_samples], dtype=np.float64)
-        values = np.array([sample[1] for sample in self._ir_samples], dtype=np.float64)
-        values -= np.mean(values)
-        if np.allclose(values, 0.0):
-            return 0.0
-
-        timestamps -= timestamps[0]
-        angular_frequency = 2 * np.pi * float(self.config.ir_target_frequency)
-        sin_component = np.dot(values, np.sin(angular_frequency * timestamps))
-        cos_component = np.dot(values, np.cos(angular_frequency * timestamps))
-        magnitude = np.sqrt(sin_component**2 + cos_component**2)
-        power = np.sqrt(np.sum(values**2))
-        if power <= 0:
-            return 0.0
-
-        score = float(magnitude / power)
-        return min(1.0, score)
+        weighted = [value for _, value in self._ir_samples]
+        return float(sum(weighted) / len(weighted))
 
     def _update_motion_buffer(self, normalized_x: float) -> bool:
         now = time.monotonic()
