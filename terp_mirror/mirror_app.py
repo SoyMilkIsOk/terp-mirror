@@ -325,6 +325,7 @@ class RuntimeToggles:
     """Flags mutated in response to operator hotkeys."""
 
     diagnostics_visible: bool = False
+    controls_visible: bool = True
 
 
 @dataclass
@@ -1021,6 +1022,10 @@ def _update_phase(
         elif event.key == pygame.K_d:
             toggles.diagnostics_visible = not toggles.diagnostics_visible
             handled = True
+        elif event.key in (pygame.K_LALT, pygame.K_RALT):
+            if not getattr(event, "repeat", False):
+                toggles.controls_visible = not toggles.controls_visible
+            handled = True
         elif event.key == pygame.K_LEFTBRACKET:
             prize_manager.cycle_selection(-1)
             print(f"[prizes] Selected prize: {prize_manager.current_selection()}")
@@ -1073,6 +1078,7 @@ def _render_phase(
     prize_overlay: PrizeStatusOverlay,
     control_panel: ControlPanel,
     camera_overlay: CameraStatusOverlay,
+    toggles: RuntimeToggles,
     detection: Optional[DetectionResult],
     frame_size: Optional[tuple[int, int]],
     calibration: Optional[CalibrationMapping],
@@ -1148,7 +1154,8 @@ def _render_phase(
             pygame.draw.circle(target, (255, 0, 0), mapped_point, 14, 3)
 
     prize_overlay.draw(target, state_machine.prize_manager)
-    control_panel.draw(target)
+    if toggles.controls_visible:
+        control_panel.draw(target)
     camera_overlay.draw(target, camera_status)
 
     if diagnostics_data is not None:
@@ -1287,6 +1294,7 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
                 prize_overlay,
                 control_panel,
                 camera_overlay,
+                toggles,
                 last_detection,
                 last_frame_size,
                 active_calibration,
