@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import math
 import time
 from typing import Deque, Optional
 
@@ -32,6 +33,7 @@ class DetectionConfig:
     morph_kernel: int
     morph_iterations: int
     min_contour_area: float
+    min_circularity: float = 0.65
     roi: DetectionROI
     buffer_duration: float
     min_wave_span: float
@@ -51,6 +53,7 @@ class DetectionResult:
     wave_detected: bool
     centroid: Optional[tuple[int, int]] = None
     contour_area: float = 0.0
+    circularity: float = 0.0
     ir_score: float = 0.0
     mode: str = "color"
     signal_strength: float = 0.0
@@ -90,7 +93,7 @@ class WaveDetector:
         status = "paused" if self._paused else "resumed"
         print(f"[detector] Detection {status} by operator hotkey")
 
-    def handle_key(self, key: int) -> None:
+    def handle_key(self, key: int, mod: int = 0) -> None:
         """Handle key presses for tuning HSV thresholds at runtime."""
 
         adjustments = {
@@ -98,14 +101,14 @@ class WaveDetector:
             pygame.K_2: ("lower", 0, 1),
             pygame.K_3: ("upper", 0, -1),
             pygame.K_4: ("upper", 0, 1),
-            pygame.K_5: ("lower", 1, -5),
-            pygame.K_6: ("lower", 1, 5),
-            pygame.K_7: ("upper", 1, -5),
-            pygame.K_8: ("upper", 1, 5),
-            pygame.K_9: ("lower", 2, -5),
-            pygame.K_0: ("lower", 2, 5),
-            pygame.K_MINUS: ("upper", 2, -5),
-            pygame.K_EQUALS: ("upper", 2, 5),
+            pygame.K_5: ("lower", 1, -1),
+            pygame.K_6: ("lower", 1, 1),
+            pygame.K_7: ("upper", 1, -1),
+            pygame.K_8: ("upper", 1, 1),
+            pygame.K_9: ("lower", 2, -1),
+            pygame.K_0: ("lower", 2, 1),
+            pygame.K_MINUS: ("upper", 2, -1),
+            pygame.K_EQUALS: ("upper", 2, 1),
         }
 
         if key == pygame.K_TAB:
@@ -116,7 +119,8 @@ class WaveDetector:
             return
 
         bound, channel, delta = adjustments[key]
-        self._adjust_threshold(bound, channel, delta)
+        multiplier = 5 if mod & pygame.KMOD_SHIFT else 1
+        self._adjust_threshold(bound, channel, delta * multiplier)
 
     def _adjust_threshold(self, bound: str, channel: int, delta: int) -> None:
         lower = list(self.config.hsv_lower)
@@ -180,17 +184,27 @@ class WaveDetector:
 
         best_contour: Optional[np.ndarray] = None
         best_area = 0.0
+        best_circularity = 0.0
 
         for contour in contours:
             area = cv2.contourArea(contour)
+            if area < self.config.min_contour_area:
+                continue
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter <= 0:
+                continue
+            circularity = 4 * math.pi * area / max(perimeter * perimeter, 1e-9)
+            if circularity < self.config.min_circularity:
+                continue
             if area > best_area:
                 best_area = area
                 best_contour = contour
+                best_circularity = circularity
 
         centroid: Optional[tuple[int, int]] = None
         wave_detected = False
 
-        if best_contour is not None and best_area >= self.config.min_contour_area:
+        if best_contour is not None:
             moments = cv2.moments(best_contour)
             if moments["m00"] != 0:
                 cx = int(moments["m10"] / moments["m00"])
@@ -239,6 +253,7 @@ class WaveDetector:
                 best_contour,
                 centroid,
                 best_area,
+                best_circularity,
                 mask,
                 ir_score,
                 mode,
@@ -248,6 +263,7 @@ class WaveDetector:
             wave_detected=wave_detected,
             centroid=centroid,
             contour_area=best_area,
+            circularity=best_circularity,
             ir_score=ir_score,
             mode=mode,
             signal_strength=signal_strength,
@@ -319,6 +335,7 @@ class WaveDetector:
         contour: Optional[np.ndarray],
         centroid: Optional[tuple[int, int]],
         area: float,
+        circularity: float,
         mask: np.ndarray,
         ir_score: float,
         mode: str,
@@ -358,8 +375,18 @@ class WaveDetector:
         )
         cv2.putText(
             frame,
-            f"IR score: {ir_score:.2f} ({mode})",
+            f"Circularity: {circularity:.2f} (min {self.config.min_circularity:.2f})",
             (20, 100),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            f"IR score: {ir_score:.2f} ({mode})",
+            (20, 130),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
             (0, 255, 0),

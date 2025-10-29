@@ -31,6 +31,7 @@ timers:
 * `timers.rolling` &mdash; Seconds spent animating the spinner before revealing a result.
 * `timers.result` &mdash; Seconds the placeholder prize card stays on screen.
 * `timers.cooldown` &mdash; Seconds to wait before returning to the idle camera feed.
+* `detection.min_circularity` &mdash; Filters out non-circular blobs when tracking the LED target.
 
 ## Running the mirror
 
@@ -51,7 +52,14 @@ The mirror runs fullscreen. During operation you can use the following hotkeys:
 
 * <kbd>R</kbd> &mdash; Trigger a prize roll and show the spinner animation.
 * <kbd>F</kbd> &mdash; Skip directly to the prize/result card.
+* <kbd>Tab</kbd> &mdash; Toggle the detection debug overlay.
+* <kbd>Option</kbd>/<kbd>Alt</kbd> &mdash; Show or hide the control menu.
+* <kbd>D</kbd> &mdash; Toggle the diagnostics overlay.
+* <kbd>↑</kbd>/<kbd>↓</kbd>/<kbd>←</kbd>/<kbd>→</kbd> &mdash; Navigate the control panel (hold <kbd>Shift</kbd> for 5× adjustments).
 * <kbd>Esc</kbd> / <kbd>Q</kbd> &mdash; Exit the application.
+
+When adjusting HSV thresholds from the debug hotkeys (`1`&ndash;`0`, `-`, `=`), holding
+<kbd>Shift</kbd> applies the change in steps of five for faster tuning.
 
 > **Note:** The requirements pin NumPy to the `1.26` series so it remains
 > compatible with the tested OpenCV (4.9.x) and SciPy (1.10.x) wheels. Adjust the

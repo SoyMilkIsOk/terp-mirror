@@ -160,6 +160,7 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
         morph_kernel = int(data.get("morph_kernel", 5))
         morph_iterations = int(data.get("morph_iterations", 1))
         min_contour_area = float(data.get("min_contour_area", 1500.0))
+        min_circularity = float(data.get("min_circularity", 0.65))
         buffer_duration = float(data.get("buffer_duration", 0.6))
         min_wave_span = float(data.get("min_wave_span", 0.2))
         min_wave_velocity = float(data.get("min_wave_velocity", 0.4))
@@ -181,6 +182,8 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
         raise MirrorConfigError("Detection.min_wave_velocity must be positive.")
     if cooldown < 0:
         raise MirrorConfigError("Detection.cooldown must be zero or greater.")
+    if not 0.0 < min_circularity <= 1.0:
+        raise MirrorConfigError("Detection.min_circularity must be within (0, 1].")
     if ir_buffer_duration <= 0:
         raise MirrorConfigError("Detection.ir_buffer_duration must be positive.")
     if not 0 <= ir_score_threshold <= 1:
@@ -199,6 +202,7 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
         morph_kernel=max(1, morph_kernel),
         morph_iterations=max(0, morph_iterations),
         min_contour_area=min_contour_area,
+        min_circularity=min_circularity,
         roi=roi,
         buffer_duration=buffer_duration,
         min_wave_span=min_wave_span,
@@ -316,6 +320,8 @@ class RuntimeToggles:
     """Flags mutated in response to operator hotkeys."""
 
     diagnostics_visible: bool = False
+    control_panel_visible: bool = True
+    mirror_ui: bool = True
 
 
 @dataclass
@@ -443,6 +449,7 @@ class DiagnosticsOverlay:
                 lines.append(f"Signal: {det.signal_strength:.2f}")
             else:
                 lines.append(f"Contour area: {int(det.contour_area)}")
+                lines.append(f"Circularity: {det.circularity:.2f}")
                 lines.append(f"Signal: {int(det.signal_strength)}")
             lines.append(f"Wave detected: {'YES' if det.wave_detected else 'no'}")
 
@@ -505,6 +512,7 @@ class ControlItem:
         minimum: Optional[float] = None,
         maximum: Optional[float] = None,
         coerce=lambda value: value,
+        display=None,
     ) -> None:
         self.label = label
         self._getter = getter
@@ -514,21 +522,28 @@ class ControlItem:
         self.minimum = minimum
         self.maximum = maximum
         self._coerce = coerce
+        self._display = display
 
     def value(self):
         return self._getter()
 
     def formatted(self) -> str:
+        value = self.value()
+        if self._display is not None:
+            try:
+                return self._display(value)
+            except Exception:
+                pass
         try:
-            return self.fmt.format(self.value())
+            return self.fmt.format(value)
         except (ValueError, TypeError):
-            return str(self.value())
+            return str(value)
 
-    def adjust(self, delta: int) -> None:
+    def adjust(self, delta: int, multiplier: float = 1.0) -> None:
         if self._setter is None:
             return
         raw = float(self.value())
-        new_value = raw + delta * self.step
+        new_value = raw + delta * self.step * multiplier
         if self.minimum is not None:
             new_value = max(self.minimum, new_value)
         if self.maximum is not None:
@@ -545,10 +560,12 @@ class ControlPanel:
         settings: RuntimeSettings,
         state_machine: MirrorStateMachine,
         detector: Optional[WaveDetector],
+        toggles: RuntimeToggles,
     ) -> None:
         self.settings = settings
         self.state_machine = state_machine
         self.detector = detector
+        self.toggles = toggles
         self.font = pygame.font.Font(None, 26)
         self.header_font = pygame.font.Font(None, 32)
         self.items: list[ControlItem] = []
@@ -566,6 +583,18 @@ class ControlPanel:
                 minimum=15,
                 maximum=240,
                 coerce=lambda value: int(round(value)),
+            ),
+            ControlItem(
+                "Mirror UI",
+                getter=lambda toggles=self.toggles: 1.0 if toggles.mirror_ui else 0.0,
+                setter=lambda value, toggles=self.toggles: setattr(
+                    toggles, "mirror_ui", bool(round(value))
+                ),
+                step=1.0,
+                minimum=0.0,
+                maximum=1.0,
+                coerce=lambda value: 1.0 if value >= 0.5 else 0.0,
+                display=lambda value: "Mirrored" if value >= 0.5 else "Unmirrored",
             ),
             ControlItem(
                 "Roll duration",
@@ -602,6 +631,14 @@ class ControlPanel:
                     setter=lambda value, cfg=cfg: setattr(cfg, "min_contour_area", float(value)),
                     step=100.0,
                     minimum=0.0,
+                ),
+                ControlItem(
+                    "Min circularity",
+                    getter=lambda cfg=cfg: cfg.min_circularity,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "min_circularity", float(value)),
+                    step=0.01,
+                    minimum=0.05,
+                    maximum=1.0,
                 ),
                 ControlItem(
                     "Buffer duration",
@@ -774,22 +811,34 @@ class ControlPanel:
         else:
             value = max(0.0, min(1.0, value))
 
-        setattr(config.roi, attribute, value)
-        config.roi.x = max(0.0, min(config.roi.x, 1.0 - config.roi.width))
-        config.roi.y = max(0.0, min(config.roi.y, 1.0 - config.roi.height))
+        roi = config.roi
+        roi_values = {
+            "x": roi.x,
+            "y": roi.y,
+            "width": roi.width,
+            "height": roi.height,
+        }
+        roi_values[attribute] = value
+        roi_values["width"] = max(0.05, min(1.0, roi_values["width"]))
+        roi_values["height"] = max(0.05, min(1.0, roi_values["height"]))
+        roi_values["x"] = max(0.0, min(roi_values["x"], 1.0 - roi_values["width"]))
+        roi_values["y"] = max(0.0, min(roi_values["y"], 1.0 - roi_values["height"]))
+
+        config.roi = DetectionROI(**roi_values)
 
     def move_selection(self, delta: int) -> None:
-        if not self.items:
+        if not self.items or not self.toggles.control_panel_visible:
             return
         self.selected_index = (self.selected_index + delta) % len(self.items)
 
-    def adjust_selection(self, delta: int) -> None:
-        if not self.items:
+    def adjust_selection(self, delta: int, *, fast: bool = False) -> None:
+        if not self.items or not self.toggles.control_panel_visible:
             return
-        self.items[self.selected_index].adjust(delta)
+        multiplier = 5.0 if fast else 1.0
+        self.items[self.selected_index].adjust(delta, multiplier=multiplier)
 
     def draw(self, target: pygame.Surface) -> None:
-        if not self.items:
+        if not self.items or not self.toggles.control_panel_visible:
             return
 
         width = int(target.get_width() * 0.28)
@@ -802,9 +851,14 @@ class ControlPanel:
         header = self.header_font.render("Controls Panel", True, (255, 255, 255))
         overlay.blit(header, (16, y))
         y += header.get_height() + 6
-        instruction = self.font.render("↑↓ select | ←→ adjust", True, (220, 220, 220))
+        instruction = self.font.render(
+            "↑↓ select | ←→ adjust | Shift ×5", True, (220, 220, 220)
+        )
         overlay.blit(instruction, (16, y))
         y += instruction.get_height() + 10
+        hotkeys = self.font.render("Tab debug | Option menu", True, (200, 200, 210))
+        overlay.blit(hotkeys, (16, y))
+        y += hotkeys.get_height() + 10
 
         for idx, item in enumerate(self.items):
             text = f"{item.label}: {item.formatted()}"
@@ -973,6 +1027,12 @@ def _update_phase(
         elif event.key == pygame.K_p and detector is not None:
             detector.toggle_pause()
             handled = True
+        elif event.key == pygame.K_TAB and detector is not None:
+            detector.toggle_debug()
+            handled = True
+        elif event.key in (pygame.K_LALT, pygame.K_RALT):
+            toggles.control_panel_visible = not toggles.control_panel_visible
+            handled = True
         elif event.key == pygame.K_d:
             toggles.diagnostics_visible = not toggles.diagnostics_visible
             handled = True
@@ -1003,14 +1063,14 @@ def _update_phase(
             control_panel.move_selection(1)
             handled = True
         elif event.key == pygame.K_LEFT:
-            control_panel.adjust_selection(-1)
+            control_panel.adjust_selection(-1, fast=bool(event.mod & pygame.KMOD_SHIFT))
             handled = True
         elif event.key == pygame.K_RIGHT:
-            control_panel.adjust_selection(1)
+            control_panel.adjust_selection(1, fast=bool(event.mod & pygame.KMOD_SHIFT))
             handled = True
 
         if detector is not None and not handled:
-            detector.handle_key(event.key)
+            detector.handle_key(event.key, event.mod)
 
     state_machine.update()
     return running, manual_triggered
@@ -1134,14 +1194,14 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
     state_machine.prize_manager = prize_manager
     detector = WaveDetector(config.detection) if config.detection is not None else None
     settings = RuntimeSettings(target_fps=config.target_fps)
-    control_panel = ControlPanel(settings, state_machine, detector)
+    toggles = RuntimeToggles(mirror_ui=config.mirror)
+    control_panel = ControlPanel(settings, state_machine, detector, toggles)
     spinner = SpinnerOverlay()
     result_overlay = ResultOverlay()
     prompt_overlay = PromptOverlay()
     diagnostics_overlay = DiagnosticsOverlay()
     camera_overlay = CameraStatusOverlay()
     prize_overlay = PrizeStatusOverlay()
-    toggles = RuntimeToggles()
     camera_manager = CameraManager(camera_index, enabled=not dry_run)
     composite_surface = pygame.Surface(screen_size)
 
@@ -1247,7 +1307,7 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
                 detector.paused if detector is not None else False,
             )
 
-            if config.mirror:
+            if toggles.mirror_ui:
                 flipped = pygame.transform.flip(target_surface, True, False)
                 screen.blit(flipped, (0, 0))
             else:
