@@ -150,6 +150,11 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
         min_wave_span = float(data.get("min_wave_span", 0.2))
         min_wave_velocity = float(data.get("min_wave_velocity", 0.4))
         cooldown = float(data.get("cooldown", 1.5))
+        ir_target_frequency = float(data.get("ir_target_frequency", 200.0))
+        ir_buffer_duration = float(data.get("ir_buffer_duration", 0.35))
+        ir_score_threshold = float(data.get("ir_score_threshold", 0.6))
+        ir_release_threshold = float(data.get("ir_release_threshold", 0.4))
+        ir_debounce = float(data.get("ir_debounce", 1.0))
     except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
         raise MirrorConfigError("Detection numeric parameters must be valid numbers.") from exc
 
@@ -163,6 +168,18 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
         raise MirrorConfigError("Detection.min_wave_velocity must be positive.")
     if cooldown < 0:
         raise MirrorConfigError("Detection.cooldown must be zero or greater.")
+    if ir_target_frequency <= 0:
+        raise MirrorConfigError("Detection.ir_target_frequency must be positive.")
+    if ir_buffer_duration <= 0:
+        raise MirrorConfigError("Detection.ir_buffer_duration must be positive.")
+    if not 0 <= ir_score_threshold <= 1:
+        raise MirrorConfigError("Detection.ir_score_threshold must be within [0, 1].")
+    if not 0 <= ir_release_threshold <= 1:
+        raise MirrorConfigError("Detection.ir_release_threshold must be within [0, 1].")
+    if ir_release_threshold > ir_score_threshold:
+        raise MirrorConfigError("Detection.ir_release_threshold must be <= ir_score_threshold.")
+    if ir_debounce < 0:
+        raise MirrorConfigError("Detection.ir_debounce must be zero or greater.")
 
     return DetectionConfig(
         hsv_lower=hsv_lower,
@@ -176,6 +193,12 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
         min_wave_span=min_wave_span,
         min_wave_velocity=min_wave_velocity,
         cooldown=cooldown,
+        ir_enabled=bool(data.get("ir_enabled", True)),
+        ir_target_frequency=ir_target_frequency,
+        ir_buffer_duration=ir_buffer_duration,
+        ir_score_threshold=ir_score_threshold,
+        ir_release_threshold=ir_release_threshold,
+        ir_debounce=ir_debounce,
     )
 
 
@@ -266,6 +289,33 @@ class ResultOverlay:
         target.blit(overlay, (0, 0))
 
 
+class DiagnosticsOverlay:
+    """Render detection diagnostics (mode, signal strength, scores)."""
+
+    def __init__(self) -> None:
+        self.font = pygame.font.Font(None, 36)
+
+    def draw(self, target: pygame.Surface, detection: Optional[DetectionResult]) -> None:
+        if detection is None:
+            return
+
+        lines = [f"Detection mode: {detection.mode.upper()}"]
+        if detection.mode == "ir":
+            lines.append(f"IR score: {detection.ir_score:.2f}")
+            signal_text = f"Signal: {detection.signal_strength:.2f}"
+        else:
+            lines.append(f"Contour area: {int(detection.contour_area)}")
+            signal_text = f"Signal: {int(detection.signal_strength)}"
+        lines.append(signal_text)
+        lines.append(f"Wave detected: {'YES' if detection.wave_detected else 'no'}")
+
+        y = 20
+        for line in lines:
+            surface = self.font.render(line, True, (255, 255, 255))
+            target.blit(surface, (20, y))
+            y += surface.get_height() + 6
+
+
 def _capture_phase(
     cap: Optional["cv2.VideoCapture"],
     config: MirrorConfig,
@@ -329,6 +379,8 @@ def _render_phase(
     state_machine: MirrorStateMachine,
     spinner: SpinnerOverlay,
     result_overlay: ResultOverlay,
+    diagnostics_overlay: DiagnosticsOverlay,
+    detection: Optional[DetectionResult],
 ) -> None:
     if frame_surface is not None:
         screen.blit(frame_surface, (0, 0))
@@ -339,6 +391,8 @@ def _render_phase(
         spinner.draw(screen, state_machine.time_in_state() * 2 * math.pi)
     elif state_machine.state is MirrorState.RESULT:
         result_overlay.draw(screen, state_machine.current_prize)
+
+    diagnostics_overlay.draw(screen, detection)
 
 
 def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> None:
@@ -370,8 +424,10 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
     detector = WaveDetector(config.detection) if config.detection is not None else None
     spinner = SpinnerOverlay()
     result_overlay = ResultOverlay()
+    diagnostics_overlay = DiagnosticsOverlay()
 
     last_frame: Optional[pygame.Surface] = None
+    last_detection: Optional[DetectionResult] = None
 
     try:
         running = True
@@ -382,6 +438,8 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
             frame_surface, detection_result = _capture_phase(cap, config, screen_size, detector)
             if frame_surface is not None:
                 last_frame = frame_surface
+            if detection_result is not None:
+                last_detection = detection_result
 
             if (
                 detection_result is not None
@@ -390,7 +448,15 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
             ):
                 state_machine.trigger_roll()
 
-            _render_phase(screen, last_frame, state_machine, spinner, result_overlay)
+            _render_phase(
+                screen,
+                last_frame,
+                state_machine,
+                spinner,
+                result_overlay,
+                diagnostics_overlay,
+                last_detection,
+            )
 
             pygame.display.flip()
             clock.tick(config.target_fps)
