@@ -9,7 +9,7 @@ from typing import Final, Optional
 
 import time
 
-from .prizes import GRAND_PRIZE_NAME, log_prize_roll, weighted_prize_choice
+from .prizes import GRAND_PRIZE_NAME, PrizeManager
 
 
 class MirrorState(str, Enum):
@@ -34,6 +34,9 @@ class MirrorStateMachine:
     _state_started: float = field(default_factory=time.monotonic)
     current_prize: Optional[str] = None
     _pending_grand_prize: bool = False
+    prize_manager: PrizeManager = field(default_factory=PrizeManager)
+    last_trigger_timestamp: float = field(default_factory=time.monotonic)
+    last_result_timestamp: Optional[float] = None
 
     def transition(self, new_state: MirrorState) -> None:
         """Transition to ``new_state`` and reset the internal timer."""
@@ -46,8 +49,10 @@ class MirrorStateMachine:
         if new_state is MirrorState.ROLLING:
             self.current_prize = None
             self._pending_grand_prize = False
+            self.last_trigger_timestamp = self._state_started
         elif new_state is MirrorState.RESULT:
             self._resolve_result()
+            self.last_result_timestamp = self._state_started
 
     def trigger_roll(self) -> None:
         """Start a roll sequence if the machine is idle or cooling down."""
@@ -66,6 +71,18 @@ class MirrorStateMachine:
 
         self._pending_grand_prize = True
         self.force_result()
+
+    def queue_manual_prize(self, prize_name: str) -> None:
+        """Queue an explicit prize for the next result."""
+
+        if prize_name == GRAND_PRIZE_NAME:
+            self._pending_grand_prize = True
+        else:
+            self.prize_manager.queue_specific_prize(prize_name)
+        if self.state is MirrorState.IDLE:
+            self.trigger_roll()
+        else:
+            self.force_result()
 
     def update(self) -> None:
         """Update the state based on elapsed time."""
@@ -90,12 +107,13 @@ class MirrorStateMachine:
 
         forced = self._pending_grand_prize
         if forced:
-            prize_name = GRAND_PRIZE_NAME
+            prize_name, forced = self.prize_manager.resolve_prize(
+                override=GRAND_PRIZE_NAME, forced=True
+            )
         else:
-            prize_name = weighted_prize_choice(rng=self.rng).name
+            prize_name, forced = self.prize_manager.resolve_prize()
 
         self.current_prize = prize_name
-        log_prize_roll(prize_name, forced=forced, dry_run=self.dry_run)
         self._pending_grand_prize = False
 
 
