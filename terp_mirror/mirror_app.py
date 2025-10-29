@@ -1166,8 +1166,8 @@ def _render_phase(
         if mapped_point is not None:
             pygame.draw.circle(target, (255, 0, 0), mapped_point, 14, 3)
 
-    prize_overlay.draw(target, state_machine.prize_manager)
     if toggles.controls_visible:
+        prize_overlay.draw(target, state_machine.prize_manager)
         control_panel.draw(target)
     camera_overlay.draw(target, camera_status)
 

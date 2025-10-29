@@ -54,7 +54,7 @@ The mirror runs fullscreen. During operation you can use the following hotkeys:
 * <kbd>R</kbd> &mdash; Trigger a prize roll and show the spinner animation.
 * <kbd>F</kbd> &mdash; Skip directly to the prize/result card.
 * <kbd>Esc</kbd> / <kbd>Q</kbd> &mdash; Exit the application.
-* <kbd>⌥ Option</kbd> (or <kbd>Alt</kbd>) &mdash; Toggle the operator controls panel.
+* <kbd>⌥ Option</kbd> (or <kbd>Alt</kbd>) &mdash; Toggle the operator controls panel and prize inventory menu.
 
 ## Controls panel (operator cheat-sheet)
 
