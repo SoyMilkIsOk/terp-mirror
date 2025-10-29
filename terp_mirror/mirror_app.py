@@ -537,7 +537,7 @@ class ControlItem:
         except (ValueError, TypeError):
             return str(value)
 
-    def adjust(self, delta: int) -> None:
+    def adjust(self, delta: int, multiplier: int = 1) -> None:
         if self._setter is None:
             return
         if delta == 0:
@@ -549,7 +549,7 @@ class ControlItem:
             return
 
         raw = float(current_value)
-        new_value = raw + delta * self.step
+        new_value = raw + delta * self.step * multiplier
         if self.minimum is not None:
             new_value = max(self.minimum, new_value)
         if self.maximum is not None:
@@ -829,10 +829,10 @@ class ControlPanel:
             return
         self.selected_index = (self.selected_index + delta) % len(self.items)
 
-    def adjust_selection(self, delta: int) -> None:
+    def adjust_selection(self, delta: int, multiplier: int = 1) -> None:
         if not self.items:
             return
-        self.items[self.selected_index].adjust(delta)
+        self.items[self.selected_index].adjust(delta, multiplier)
 
     def draw(self, target: pygame.Surface) -> None:
         if not self.items:
@@ -848,7 +848,9 @@ class ControlPanel:
         header = self.header_font.render("Controls Panel", True, (255, 255, 255))
         overlay.blit(header, (16, y))
         y += header.get_height() + 6
-        instruction = self.font.render("↑↓ select | ←→ adjust", True, (220, 220, 220))
+        instruction = self.font.render(
+            "↑↓ select | ←→ adjust (hold Shift for ×5)", True, (220, 220, 220)
+        )
         overlay.blit(instruction, (16, y))
         y += instruction.get_height() + 10
 
@@ -1053,14 +1055,16 @@ def _update_phase(
             control_panel.move_selection(1)
             handled = True
         elif event.key == pygame.K_LEFT:
-            control_panel.adjust_selection(-1)
+            multiplier = 5 if event.mod & pygame.KMOD_SHIFT else 1
+            control_panel.adjust_selection(-1, multiplier)
             handled = True
         elif event.key == pygame.K_RIGHT:
-            control_panel.adjust_selection(1)
+            multiplier = 5 if event.mod & pygame.KMOD_SHIFT else 1
+            control_panel.adjust_selection(1, multiplier)
             handled = True
 
         if detector is not None and not handled:
-            detector.handle_key(event.key)
+            detector.handle_key(event.key, event.mod)
 
     state_machine.update()
     return running, manual_triggered

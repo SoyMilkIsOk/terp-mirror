@@ -60,7 +60,8 @@ The mirror runs fullscreen. During operation you can use the following hotkeys:
 
 The controls panel is visible by default. Press <kbd>Up</kbd>/<kbd>Down</kbd> to
 select a control and <kbd>Left</kbd>/<kbd>Right</kbd> to adjust its value while
-the mirror is running. The detection controls let you
+the mirror is running. Hold <kbd>Shift</kbd> with <kbd>Left</kbd>/<kbd>Right</kbd>
+to jump in five-step increments. The detection controls let you
 fine-tune how strict the wave detector behaves without restarting the app:
 
 * **Mirror output** &mdash; Flip the projector view horizontally without restarting
@@ -80,6 +81,10 @@ fine-tune how strict the wave detector behaves without restarting the app:
 
 Enable the detector debug overlay with <kbd>Tab</kbd> to confirm that the ROI
 and HSV mask continue to frame the operator correctly after any adjustments.
+While the overlay is visible you can use the number-row hotkeys to tweak the
+HSV thresholds (<kbd>1</kbd>/<kbd>2</kbd> adjust the hue lower bound, etc.). Hold
+<kbd>Shift</kbd> with those hotkeys to apply a ×5 adjustment when you need bigger
+swings quickly.
 
 > **Note:** The requirements pin NumPy to the `1.26` series so it remains
 > compatible with the tested OpenCV (4.9.x) and SciPy (1.10.x) wheels. Adjust the
