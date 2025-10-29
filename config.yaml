@@ -17,6 +17,7 @@ detection:
   morph_iterations: 1
   min_contour_area: 300
   min_circularity: 0.65
+  processing_interval: 0.04
   buffer_duration: 0.6
   min_wave_span: 0.2
   min_wave_velocity: 0.4

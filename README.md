@@ -66,6 +66,10 @@ fine-tune how strict the wave detector behaves without restarting the app:
   filter out sleeves or stray limbs; lower it if legitimate waves fail to
   register. The live debug overlay shows the measured circularity so you can
   observe how tweaks affect detection.
+* **Processing interval (s)** &mdash; Minimum delay between full contour analyses.
+  Increase it to lighten the per-frame workload (helpful when the camera feed
+  flickers after enabling circularity checks). Keep it at or below ~0.05&nbsp;s so
+  the detector still samples motion often enough to track deliberate waves.
 
 Enable the detector debug overlay with <kbd>Tab</kbd> to confirm that the ROI
 and HSV mask continue to frame the operator correctly after any adjustments.
