@@ -820,9 +820,18 @@ class ControlPanel:
         else:
             value = max(0.0, min(1.0, value))
 
-        setattr(config.roi, attribute, value)
-        config.roi.x = max(0.0, min(config.roi.x, 1.0 - config.roi.width))
-        config.roi.y = max(0.0, min(config.roi.y, 1.0 - config.roi.height))
+        roi = config.roi
+        new_roi = replace(roi, **{attribute: value})
+
+        max_x = max(0.0, 1.0 - new_roi.width)
+        max_y = max(0.0, 1.0 - new_roi.height)
+        clamped_x = min(max(new_roi.x, 0.0), max_x)
+        clamped_y = min(max(new_roi.y, 0.0), max_y)
+
+        if clamped_x != new_roi.x or clamped_y != new_roi.y:
+            new_roi = replace(new_roi, x=clamped_x, y=clamped_y)
+
+        config.roi = new_roi
 
     def move_selection(self, delta: int) -> None:
         if not self.items:
@@ -1157,8 +1166,8 @@ def _render_phase(
         if mapped_point is not None:
             pygame.draw.circle(target, (255, 0, 0), mapped_point, 14, 3)
 
-    prize_overlay.draw(target, state_machine.prize_manager)
     if toggles.controls_visible:
+        prize_overlay.draw(target, state_machine.prize_manager)
         control_panel.draw(target)
     camera_overlay.draw(target, camera_status)
 

@@ -54,7 +54,7 @@ The mirror runs fullscreen. During operation you can use the following hotkeys:
 * <kbd>R</kbd> &mdash; Trigger a prize roll and show the spinner animation.
 * <kbd>F</kbd> &mdash; Skip directly to the prize/result card.
 * <kbd>Esc</kbd> / <kbd>Q</kbd> &mdash; Exit the application.
-* <kbd>⌥ Option</kbd> (or <kbd>Alt</kbd>) &mdash; Toggle the operator controls panel.
+* <kbd>⌥ Option</kbd> (or <kbd>Alt</kbd>) &mdash; Toggle the operator controls panel and prize inventory menu.
 
 ## Controls panel (operator cheat-sheet)
 
@@ -78,6 +78,10 @@ fine-tune how strict the wave detector behaves without restarting the app:
   Increase it to lighten the per-frame workload (helpful when the camera feed
   flickers after enabling circularity checks). Keep it at or below ~0.05&nbsp;s so
   the detector still samples motion often enough to track deliberate waves.
+
+Recent builds fix the controls so every ROI slider reliably updates the
+rectangle while keeping it inside the camera frame. Dial in the bounds first,
+then fine-tune the HSV thresholds to match the calibrated region.
 
 Enable the detector debug overlay with <kbd>Tab</kbd> to confirm that the ROI
 and HSV mask continue to frame the operator correctly after any adjustments.
