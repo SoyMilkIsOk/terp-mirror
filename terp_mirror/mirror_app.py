@@ -19,6 +19,13 @@ import pygame
 import yaml
 
 from .detection import DetectionConfig, DetectionROI, DetectionResult, WaveDetector
+from .calibration import (
+    CalibrationConfig,
+    CalibrationError,
+    CalibrationMapping,
+    load_calibration_mapping,
+    map_point_to_screen,
+)
 from .states import MirrorState, MirrorStateMachine
 
 
@@ -42,6 +49,7 @@ class MirrorConfig:
     result_duration: float
     cooldown_duration: float
     detection: DetectionConfig
+    calibration: CalibrationConfig
     dry_run: bool = False
 
 
@@ -85,6 +93,7 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
             raise MirrorConfigError(f"Timer '{name}' must be greater than zero.")
 
     detection_cfg = _parse_detection_config(data.get("detection", {}))
+    calibration_cfg = _parse_calibration_config(data.get("calibration", {}), path.parent)
 
     return MirrorConfig(
         monitor_index=int(data["monitor_index"]),
@@ -97,6 +106,7 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         cooldown_duration=cooldown_duration,
         dry_run=bool(data.get("dry_run", False)),
         detection=detection_cfg,
+        calibration=calibration_cfg,
     )
 
 
@@ -202,6 +212,28 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
     )
 
 
+def _parse_calibration_config(data: dict, base_dir: Path) -> CalibrationConfig:
+    if not isinstance(data, dict):
+        raise MirrorConfigError("Calibration configuration must be a mapping.")
+
+    enabled = bool(data.get("enabled", False))
+    file_value = data.get("file") or "calibration.yaml"
+    try:
+        raw_path = Path(file_value).expanduser()
+    except TypeError as exc:  # pragma: no cover - defensive
+        raise MirrorConfigError("Calibration.file must be a valid path string.") from exc
+
+    file_path = (base_dir / raw_path).resolve() if not raw_path.is_absolute() else raw_path.resolve()
+
+    return CalibrationConfig(
+        enabled=enabled,
+        file=file_path,
+        apply_prompt=bool(data.get("apply_prompt", True)),
+        apply_spinner=bool(data.get("apply_spinner", True)),
+        apply_result=bool(data.get("apply_result", True)),
+    )
+
+
 def _rotate_frame(frame, rotate_deg: int):
     if rotate_deg == 0:
         return frame
@@ -246,7 +278,7 @@ class SpinnerOverlay:
         self.radius = radius
         self.stroke = stroke
 
-    def draw(self, target: pygame.Surface, angle: float) -> None:
+    def draw(self, target: pygame.Surface, angle: float, center: tuple[int, int]) -> None:
         size = (self.radius * 2 + self.stroke * 2, self.radius * 2 + self.stroke * 2)
         overlay = pygame.Surface(size, pygame.SRCALPHA)
         rect = overlay.get_rect()
@@ -254,7 +286,7 @@ class SpinnerOverlay:
         start_angle = angle % (2 * math.pi)
         end_angle = start_angle + math.pi * 1.5
         pygame.draw.arc(overlay, (255, 215, 0), arc_rect, start_angle, end_angle, self.stroke)
-        target.blit(overlay, overlay.get_rect(center=target.get_rect().center))
+        target.blit(overlay, overlay.get_rect(center=center))
 
 
 class ResultOverlay:
@@ -264,14 +296,17 @@ class ResultOverlay:
         self.title_font = pygame.font.Font(None, 96)
         self.body_font = pygame.font.Font(None, 48)
 
-    def draw(self, target: pygame.Surface, prize_text: Optional[str]) -> None:
+    def draw(self, target: pygame.Surface, prize_text: Optional[str], center: tuple[int, int]) -> None:
         overlay = pygame.Surface(target.get_size(), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 160))
 
         card_width = int(target.get_width() * 0.5)
         card_height = int(target.get_height() * 0.35)
         card_rect = pygame.Rect(0, 0, card_width, card_height)
-        card_rect.center = target.get_rect().center
+        card_rect.center = center
+
+        # Keep the card within the screen bounds.
+        card_rect.clamp_ip(target.get_rect())
 
         pygame.draw.rect(overlay, (255, 255, 255, 235), card_rect, border_radius=20)
         pygame.draw.rect(overlay, (128, 0, 128, 255), card_rect, width=6, border_radius=20)
@@ -287,6 +322,36 @@ class ResultOverlay:
         overlay.blit(body_surface, body_rect)
 
         target.blit(overlay, (0, 0))
+
+
+class PromptOverlay:
+    """Display guidance text positioned using calibration data."""
+
+    def __init__(self) -> None:
+        self.title_font = pygame.font.Font(None, 72)
+        self.body_font = pygame.font.Font(None, 48)
+
+    def draw(
+        self,
+        target: pygame.Surface,
+        message: str,
+        center: tuple[int, int],
+        subtext: Optional[str] = None,
+    ) -> None:
+        if not message:
+            return
+
+        title_surface = self.title_font.render(message, True, (255, 255, 255))
+        title_rect = title_surface.get_rect(center=center)
+        title_rect.y -= title_surface.get_height()
+
+        target.blit(title_surface, title_rect)
+
+        if subtext:
+            body_surface = self.body_font.render(subtext, True, (255, 215, 0))
+            body_rect = body_surface.get_rect(center=center)
+            body_rect.y = title_rect.bottom + 8
+            target.blit(body_surface, body_rect)
 
 
 class DiagnosticsOverlay:
@@ -321,13 +386,13 @@ def _capture_phase(
     config: MirrorConfig,
     screen_size: tuple[int, int],
     detector: Optional[WaveDetector],
-) -> tuple[Optional[pygame.Surface], Optional[DetectionResult]]:
+) -> tuple[Optional[pygame.Surface], Optional[DetectionResult], Optional[tuple[int, int]]]:
     if cap is None:
-        return None, None
+        return None, None, None
 
     ret, frame = cap.read()
     if not ret:
-        return None, None
+        return None, None, None
 
     if config.mirror:
         frame = cv2.flip(frame, 1)
@@ -339,13 +404,14 @@ def _capture_phase(
         detection_result = detector.process_frame(frame)
 
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame_size = frame_rgb.shape[1], frame_rgb.shape[0]
 
     frame_surface = pygame.image.frombuffer(
         frame_rgb.tobytes(), frame_rgb.shape[1::-1], "RGB"
     ).convert()
     if frame_surface.get_size() != screen_size:
         frame_surface = pygame.transform.smoothscale(frame_surface, screen_size)
-    return frame_surface, detection_result
+    return frame_surface, detection_result, frame_size
 
 
 def _update_phase(
@@ -379,20 +445,57 @@ def _render_phase(
     state_machine: MirrorStateMachine,
     spinner: SpinnerOverlay,
     result_overlay: ResultOverlay,
+    prompt_overlay: PromptOverlay,
     diagnostics_overlay: DiagnosticsOverlay,
     detection: Optional[DetectionResult],
+    frame_size: Optional[tuple[int, int]],
+    calibration: Optional[CalibrationMapping],
+    calibration_config: CalibrationConfig,
 ) -> None:
     if frame_surface is not None:
         screen.blit(frame_surface, (0, 0))
     else:
         screen.fill((0, 0, 0))
 
-    if state_machine.state is MirrorState.ROLLING:
-        spinner.draw(screen, state_machine.time_in_state() * 2 * math.pi)
+    screen_size = screen.get_size()
+    rect = screen.get_rect()
+
+    base_point: Optional[tuple[float, float]] = None
+    if frame_size is not None:
+        if detection is not None and detection.centroid is not None:
+            base_point = detection.centroid
+        else:
+            base_point = (frame_size[0] / 2.0, frame_size[1] / 2.0)
+
+    def _resolve_anchor(use_calibration: bool) -> tuple[int, int]:
+        if base_point is None or frame_size is None:
+            return rect.center
+        mapping = calibration if use_calibration else None
+        try:
+            return map_point_to_screen(base_point, frame_size, screen_size, mapping)
+        except CalibrationError:
+            return rect.center
+
+    prompt_anchor = _resolve_anchor(calibration_config.apply_prompt)
+    spinner_anchor = _resolve_anchor(calibration_config.apply_spinner)
+    result_anchor = _resolve_anchor(calibration_config.apply_result)
+
+    if state_machine.state is MirrorState.IDLE:
+        prompt_overlay.draw(screen, "Wave to roll", prompt_anchor, "Raise your hand to start")
+    elif state_machine.state is MirrorState.ROLLING:
+        spinner.draw(screen, state_machine.time_in_state() * 2 * math.pi, spinner_anchor)
     elif state_machine.state is MirrorState.RESULT:
-        result_overlay.draw(screen, state_machine.current_prize)
+        result_overlay.draw(screen, state_machine.current_prize, result_anchor)
 
     diagnostics_overlay.draw(screen, detection)
+
+    if detection is not None and detection.centroid is not None and frame_size is not None:
+        try:
+            mapped_point = map_point_to_screen(detection.centroid, frame_size, screen_size, calibration)
+        except CalibrationError:
+            mapped_point = None
+        if mapped_point is not None:
+            pygame.draw.circle(screen, (255, 0, 0), mapped_point, 14, 3)
 
 
 def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> None:
@@ -424,10 +527,23 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
     detector = WaveDetector(config.detection) if config.detection is not None else None
     spinner = SpinnerOverlay()
     result_overlay = ResultOverlay()
+    prompt_overlay = PromptOverlay()
     diagnostics_overlay = DiagnosticsOverlay()
+    calibration_mapping: Optional[CalibrationMapping] = None
+    calibration_warning_emitted = False
+
+    if config.calibration.enabled:
+        if config.calibration.file is None:
+            raise MirrorConfigError("Calibration enabled but no calibration file provided.")
+        try:
+            calibration_mapping = load_calibration_mapping(config.calibration.file)
+        except CalibrationError as exc:
+            raise MirrorConfigError(str(exc)) from exc
 
     last_frame: Optional[pygame.Surface] = None
     last_detection: Optional[DetectionResult] = None
+    last_frame_size: Optional[tuple[int, int]] = None
+    active_calibration: Optional[CalibrationMapping] = None
 
     try:
         running = True
@@ -435,11 +551,24 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
             events = pygame.event.get()
             running = _update_phase(events, state_machine, detector)
 
-            frame_surface, detection_result = _capture_phase(cap, config, screen_size, detector)
+            frame_surface, detection_result, frame_size = _capture_phase(
+                cap, config, screen_size, detector
+            )
             if frame_surface is not None:
                 last_frame = frame_surface
             if detection_result is not None:
                 last_detection = detection_result
+            if frame_size is not None:
+                last_frame_size = frame_size
+                if calibration_mapping is not None and active_calibration is None:
+                    if calibration_mapping.is_compatible(last_frame_size, screen_size):
+                        active_calibration = calibration_mapping
+                    elif not calibration_warning_emitted:
+                        print(
+                            "[mirror] Calibration file does not match the current resolution; "
+                            "falling back to proportional scaling."
+                        )
+                        calibration_warning_emitted = True
 
             if (
                 detection_result is not None
@@ -454,8 +583,12 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
                 state_machine,
                 spinner,
                 result_overlay,
+                prompt_overlay,
                 diagnostics_overlay,
                 last_detection,
+                last_frame_size,
+                active_calibration,
+                config.calibration,
             )
 
             pygame.display.flip()

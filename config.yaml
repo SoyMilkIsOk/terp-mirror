@@ -31,3 +31,9 @@ detection:
     y: 0.1
     width: 0.6
     height: 0.8
+calibration:
+  enabled: false
+  file: calibration.yaml
+  apply_prompt: true
+  apply_spinner: true
+  apply_result: true
