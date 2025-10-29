@@ -317,6 +317,7 @@ class RuntimeSettings:
     """Mutable runtime settings adjusted from the control panel."""
 
     target_fps: int
+    mirror_enabled: bool
 
 
 @dataclass
@@ -527,15 +528,26 @@ class ControlItem:
         return self._getter()
 
     def formatted(self) -> str:
+        value = self.value()
+        if isinstance(value, bool):
+            return "On" if value else "Off"
         try:
-            return self.fmt.format(self.value())
+            return self.fmt.format(value)
         except (ValueError, TypeError):
-            return str(self.value())
+            return str(value)
 
     def adjust(self, delta: int) -> None:
         if self._setter is None:
             return
-        raw = float(self.value())
+        if delta == 0:
+            return
+
+        current_value = self.value()
+        if isinstance(current_value, bool):
+            self._setter(not current_value)
+            return
+
+        raw = float(current_value)
         new_value = raw + delta * self.step
         if self.minimum is not None:
             new_value = max(self.minimum, new_value)
@@ -565,6 +577,13 @@ class ControlPanel:
 
     def _build_items(self) -> None:
         self.items = [
+            ControlItem(
+                "Mirror output",
+                getter=lambda: self.settings.mirror_enabled,
+                setter=lambda value: setattr(self.settings, "mirror_enabled", bool(value)),
+                step=1,
+                fmt="{}",
+            ),
             ControlItem(
                 "Target FPS",
                 getter=lambda: self.settings.target_fps,
@@ -1159,7 +1178,10 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
     prize_manager = PrizeManager(stock_config=config.prizes, dry_run=dry_run)
     state_machine.prize_manager = prize_manager
     detector = WaveDetector(config.detection) if config.detection is not None else None
-    settings = RuntimeSettings(target_fps=config.target_fps)
+    settings = RuntimeSettings(
+        target_fps=config.target_fps,
+        mirror_enabled=config.mirror,
+    )
     control_panel = ControlPanel(settings, state_machine, detector)
     spinner = SpinnerOverlay()
     result_overlay = ResultOverlay()
@@ -1273,7 +1295,7 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
                 detector.paused if detector is not None else False,
             )
 
-            if config.mirror:
+            if settings.mirror_enabled:
                 flipped = pygame.transform.flip(target_surface, True, False)
                 screen.blit(flipped, (0, 0))
             else:

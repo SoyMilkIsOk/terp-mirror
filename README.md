@@ -25,7 +25,9 @@ timers:
   (Pygame display index).
 * `rotate_deg` &mdash; Rotation applied to each frame. Supported values are
   `0`, `90`, `-90`, `180`, and `-180` degrees.
-* `mirror` &mdash; When `true`, the feed is mirrored horizontally.
+* `mirror` &mdash; When `true`, the feed is mirrored horizontally. You can also
+  toggle mirroring at runtime from the controls panel while calibrating or
+  testing to verify the orientation looks correct.
 * `camera.index` &mdash; The OpenCV camera index to open.
 * `target_fps` &mdash; Desired update rate for the projector display.
 * `timers.rolling` &mdash; Seconds spent animating the spinner before revealing a result.
@@ -59,6 +61,9 @@ Press <kbd>Up</kbd>/<kbd>Down</kbd> to select a control and <kbd>Left</kbd>/<kbd
 to adjust its value while the mirror is running. The detection controls let you
 fine-tune how strict the wave detector behaves without restarting the app:
 
+* **Mirror output** &mdash; Flip the projector view horizontally without restarting
+  the app. Handy while dialing in calibration so you can confirm text and
+  prompts read correctly.
 * **Min contour area** &mdash; Ignore blobs smaller than this number of pixels.
 * **Min circularity** &mdash; Reject candidates whose contour circularity
   (`4πA / P²`) falls below the threshold. Rounder hands or props score closer to
