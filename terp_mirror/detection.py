@@ -106,7 +106,7 @@ class WaveDetector:
         status = "paused" if self._paused else "resumed"
         print(f"[detector] Detection {status} by operator hotkey")
 
-    def handle_key(self, key: int) -> None:
+    def handle_key(self, key: int, modifiers: int = 0) -> None:
         """Handle key presses for tuning HSV thresholds at runtime."""
 
         adjustments = {
@@ -114,14 +114,14 @@ class WaveDetector:
             pygame.K_2: ("lower", 0, 1),
             pygame.K_3: ("upper", 0, -1),
             pygame.K_4: ("upper", 0, 1),
-            pygame.K_5: ("lower", 1, -5),
-            pygame.K_6: ("lower", 1, 5),
-            pygame.K_7: ("upper", 1, -5),
-            pygame.K_8: ("upper", 1, 5),
-            pygame.K_9: ("lower", 2, -5),
-            pygame.K_0: ("lower", 2, 5),
-            pygame.K_MINUS: ("upper", 2, -5),
-            pygame.K_EQUALS: ("upper", 2, 5),
+            pygame.K_5: ("lower", 1, -1),
+            pygame.K_6: ("lower", 1, 1),
+            pygame.K_7: ("upper", 1, -1),
+            pygame.K_8: ("upper", 1, 1),
+            pygame.K_9: ("lower", 2, -1),
+            pygame.K_0: ("lower", 2, 1),
+            pygame.K_MINUS: ("upper", 2, -1),
+            pygame.K_EQUALS: ("upper", 2, 1),
         }
 
         if key == pygame.K_TAB:
@@ -132,7 +132,8 @@ class WaveDetector:
             return
 
         bound, channel, delta = adjustments[key]
-        self._adjust_threshold(bound, channel, delta)
+        multiplier = 5 if modifiers & pygame.KMOD_SHIFT else 1
+        self._adjust_threshold(bound, channel, delta * multiplier)
 
     def _adjust_threshold(self, bound: str, channel: int, delta: int) -> None:
         lower = list(self.config.hsv_lower)
