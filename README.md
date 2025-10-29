@@ -53,6 +53,23 @@ The mirror runs fullscreen. During operation you can use the following hotkeys:
 * <kbd>F</kbd> &mdash; Skip directly to the prize/result card.
 * <kbd>Esc</kbd> / <kbd>Q</kbd> &mdash; Exit the application.
 
+## Controls panel (operator cheat-sheet)
+
+Press <kbd>Up</kbd>/<kbd>Down</kbd> to select a control and <kbd>Left</kbd>/<kbd>Right</kbd>
+to adjust its value while the mirror is running. The detection controls let you
+fine-tune how strict the wave detector behaves without restarting the app:
+
+* **Min contour area** &mdash; Ignore blobs smaller than this number of pixels.
+* **Min circularity** &mdash; Reject candidates whose contour circularity
+  (`4πA / P²`) falls below the threshold. Rounder hands or props score closer to
+  `1.0`, while elongated streaks land nearer to `0.0`. Raise the threshold to
+  filter out sleeves or stray limbs; lower it if legitimate waves fail to
+  register. The live debug overlay shows the measured circularity so you can
+  observe how tweaks affect detection.
+
+Enable the detector debug overlay with <kbd>Tab</kbd> to confirm that the ROI
+and HSV mask continue to frame the operator correctly after any adjustments.
+
 > **Note:** The requirements pin NumPy to the `1.26` series so it remains
 > compatible with the tested OpenCV (4.9.x) and SciPy (1.10.x) wheels. Adjust the
 > dependencies together if you change one.

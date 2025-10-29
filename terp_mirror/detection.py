@@ -32,6 +32,7 @@ class DetectionConfig:
     morph_kernel: int
     morph_iterations: int
     min_contour_area: float
+    min_circularity: float = 0.65
     roi: DetectionROI
     buffer_duration: float
     min_wave_span: float
@@ -180,17 +181,37 @@ class WaveDetector:
 
         best_contour: Optional[np.ndarray] = None
         best_area = 0.0
+        best_circularity = 0.0
+        observed_contour: Optional[np.ndarray] = None
+        observed_area = 0.0
+        observed_circularity = 0.0
 
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area > best_area:
+            perimeter = cv2.arcLength(contour, closed=True)
+            if perimeter <= 0:
+                circularity = 0.0
+            else:
+                circularity = float(4.0 * np.pi * area / (perimeter * perimeter))
+
+            if area > observed_area:
+                observed_area = area
+                observed_contour = contour
+                observed_circularity = circularity
+
+            if (
+                area >= self.config.min_contour_area
+                and circularity >= self.config.min_circularity
+                and area > best_area
+            ):
                 best_area = area
                 best_contour = contour
+                best_circularity = circularity
 
         centroid: Optional[tuple[int, int]] = None
         wave_detected = False
 
-        if best_contour is not None and best_area >= self.config.min_contour_area:
+        if best_contour is not None:
             moments = cv2.moments(best_contour)
             if moments["m00"] != 0:
                 cx = int(moments["m10"] / moments["m00"])
@@ -233,12 +254,18 @@ class WaveDetector:
         signal_strength = ir_score if mode == "ir" else float(best_area)
 
         if self._debug_enabled:
+            debug_contour = best_contour if best_contour is not None else observed_contour
+            debug_area = best_area if best_contour is not None else observed_area
+            debug_circularity = (
+                best_circularity if best_contour is not None else observed_circularity
+            )
             self._draw_debug(
                 frame,
                 (roi_x0, roi_y0, roi_x1, roi_y1),
-                best_contour,
+                debug_contour,
                 centroid,
-                best_area,
+                debug_area,
+                debug_circularity,
                 mask,
                 ir_score,
                 mode,
@@ -319,6 +346,7 @@ class WaveDetector:
         contour: Optional[np.ndarray],
         centroid: Optional[tuple[int, int]],
         area: float,
+        circularity: float,
         mask: np.ndarray,
         ir_score: float,
         mode: str,
@@ -358,8 +386,18 @@ class WaveDetector:
         )
         cv2.putText(
             frame,
-            f"IR score: {ir_score:.2f} ({mode})",
+            f"Circularity: {circularity:.2f} (min {self.config.min_circularity:.2f})",
             (20, 100),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            f"IR score: {ir_score:.2f} ({mode})",
+            (20, 130),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
             (0, 255, 0),

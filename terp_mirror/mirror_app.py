@@ -160,6 +160,7 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
         morph_kernel = int(data.get("morph_kernel", 5))
         morph_iterations = int(data.get("morph_iterations", 1))
         min_contour_area = float(data.get("min_contour_area", 1500.0))
+        min_circularity = float(data.get("min_circularity", 0.65))
         buffer_duration = float(data.get("buffer_duration", 0.6))
         min_wave_span = float(data.get("min_wave_span", 0.2))
         min_wave_velocity = float(data.get("min_wave_velocity", 0.4))
@@ -173,6 +174,8 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
 
     if min_contour_area <= 0:
         raise MirrorConfigError("Detection.min_contour_area must be positive.")
+    if not 0.0 <= min_circularity <= 1.0:
+        raise MirrorConfigError("Detection.min_circularity must be within [0, 1].")
     if buffer_duration <= 0:
         raise MirrorConfigError("Detection.buffer_duration must be positive.")
     if min_wave_span <= 0:
@@ -199,6 +202,7 @@ def _parse_detection_config(data: dict) -> DetectionConfig:
         morph_kernel=max(1, morph_kernel),
         morph_iterations=max(0, morph_iterations),
         min_contour_area=min_contour_area,
+        min_circularity=min_circularity,
         roi=roi,
         buffer_duration=buffer_duration,
         min_wave_span=min_wave_span,
@@ -602,6 +606,14 @@ class ControlPanel:
                     setter=lambda value, cfg=cfg: setattr(cfg, "min_contour_area", float(value)),
                     step=100.0,
                     minimum=0.0,
+                ),
+                ControlItem(
+                    "Min circularity",
+                    getter=lambda cfg=cfg: cfg.min_circularity,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "min_circularity", float(value)),
+                    step=0.02,
+                    minimum=0.0,
+                    maximum=1.0,
                 ),
                 ControlItem(
                     "Buffer duration",
