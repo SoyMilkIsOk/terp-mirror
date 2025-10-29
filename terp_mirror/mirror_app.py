@@ -18,6 +18,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - import guard
 import pygame
 import yaml
 
+from .detection import DetectionConfig, DetectionROI, DetectionResult, WaveDetector
 from .states import MirrorState, MirrorStateMachine
 
 
@@ -40,6 +41,7 @@ class MirrorConfig:
     roll_duration: float
     result_duration: float
     cooldown_duration: float
+    detection: DetectionConfig
     dry_run: bool = False
 
 
@@ -82,6 +84,8 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         if value <= 0:
             raise MirrorConfigError(f"Timer '{name}' must be greater than zero.")
 
+    detection_cfg = _parse_detection_config(data.get("detection", {}))
+
     return MirrorConfig(
         monitor_index=int(data["monitor_index"]),
         rotate_deg=rotate_deg,
@@ -92,6 +96,86 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         result_duration=result_duration,
         cooldown_duration=cooldown_duration,
         dry_run=bool(data.get("dry_run", False)),
+        detection=detection_cfg,
+    )
+
+
+def _parse_detection_config(data: dict) -> DetectionConfig:
+    def _require_iterable(name: str, value) -> tuple[int, int, int]:
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            raise MirrorConfigError(f"Detection.{name} must be a sequence of three integers.")
+        try:
+            return tuple(int(v) for v in value)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise MirrorConfigError(f"Detection.{name} must be numeric.") from exc
+
+    hsv_lower = _require_iterable("hsv_min", data.get("hsv_min", (0, 120, 120)))
+    hsv_upper = _require_iterable("hsv_max", data.get("hsv_max", (40, 255, 255)))
+
+    roi_cfg = data.get(
+        "roi",
+        {
+            "x": 0.2,
+            "y": 0.1,
+            "width": 0.6,
+            "height": 0.8,
+        },
+    )
+    if not isinstance(roi_cfg, dict):
+        raise MirrorConfigError("Detection.roi must be a mapping with x/y/width/height.")
+
+    try:
+        roi = DetectionROI(
+            x=float(roi_cfg.get("x", 0.0)),
+            y=float(roi_cfg.get("y", 0.0)),
+            width=float(roi_cfg.get("width", 1.0)),
+            height=float(roi_cfg.get("height", 1.0)),
+        )
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+        raise MirrorConfigError("Detection.roi values must be numeric.") from exc
+
+    if not (0.0 <= roi.x <= 1.0 and 0.0 <= roi.y <= 1.0):
+        raise MirrorConfigError("Detection.roi x and y must be within [0, 1].")
+    if not (0.0 < roi.width <= 1.0 and 0.0 < roi.height <= 1.0):
+        raise MirrorConfigError("Detection.roi width and height must be within (0, 1].")
+    if roi.x + roi.width > 1.0 or roi.y + roi.height > 1.0:
+        raise MirrorConfigError("Detection.roi must remain within the frame bounds.")
+
+    try:
+        blur_kernel = int(data.get("blur_kernel", 11))
+        morph_kernel = int(data.get("morph_kernel", 5))
+        morph_iterations = int(data.get("morph_iterations", 1))
+        min_contour_area = float(data.get("min_contour_area", 1500.0))
+        buffer_duration = float(data.get("buffer_duration", 0.6))
+        min_wave_span = float(data.get("min_wave_span", 0.2))
+        min_wave_velocity = float(data.get("min_wave_velocity", 0.4))
+        cooldown = float(data.get("cooldown", 1.5))
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+        raise MirrorConfigError("Detection numeric parameters must be valid numbers.") from exc
+
+    if min_contour_area <= 0:
+        raise MirrorConfigError("Detection.min_contour_area must be positive.")
+    if buffer_duration <= 0:
+        raise MirrorConfigError("Detection.buffer_duration must be positive.")
+    if min_wave_span <= 0:
+        raise MirrorConfigError("Detection.min_wave_span must be positive.")
+    if min_wave_velocity <= 0:
+        raise MirrorConfigError("Detection.min_wave_velocity must be positive.")
+    if cooldown < 0:
+        raise MirrorConfigError("Detection.cooldown must be zero or greater.")
+
+    return DetectionConfig(
+        hsv_lower=hsv_lower,
+        hsv_upper=hsv_upper,
+        blur_kernel=max(1, blur_kernel),
+        morph_kernel=max(1, morph_kernel),
+        morph_iterations=max(0, morph_iterations),
+        min_contour_area=min_contour_area,
+        roi=roi,
+        buffer_duration=buffer_duration,
+        min_wave_span=min_wave_span,
+        min_wave_velocity=min_wave_velocity,
+        cooldown=cooldown,
     )
 
 
@@ -183,19 +267,27 @@ class ResultOverlay:
 
 
 def _capture_phase(
-    cap: Optional["cv2.VideoCapture"], config: MirrorConfig, screen_size: tuple[int, int]
-) -> Optional[pygame.Surface]:
+    cap: Optional["cv2.VideoCapture"],
+    config: MirrorConfig,
+    screen_size: tuple[int, int],
+    detector: Optional[WaveDetector],
+) -> tuple[Optional[pygame.Surface], Optional[DetectionResult]]:
     if cap is None:
-        return None
+        return None, None
 
     ret, frame = cap.read()
     if not ret:
-        return None
+        return None, None
 
     if config.mirror:
         frame = cv2.flip(frame, 1)
 
     frame = _rotate_frame(frame, config.rotate_deg)
+
+    detection_result: Optional[DetectionResult] = None
+    if detector is not None:
+        detection_result = detector.process_frame(frame)
+
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     frame_surface = pygame.image.frombuffer(
@@ -203,11 +295,13 @@ def _capture_phase(
     ).convert()
     if frame_surface.get_size() != screen_size:
         frame_surface = pygame.transform.smoothscale(frame_surface, screen_size)
-    return frame_surface
+    return frame_surface, detection_result
 
 
 def _update_phase(
-    events: list[pygame.event.Event], state_machine: MirrorStateMachine
+    events: list[pygame.event.Event],
+    state_machine: MirrorStateMachine,
+    detector: Optional[WaveDetector],
 ) -> bool:
     running = True
     for event in events:
@@ -222,6 +316,8 @@ def _update_phase(
                 state_machine.force_result()
             elif event.key == pygame.K_g:
                 state_machine.force_grand_prize()
+            if detector is not None:
+                detector.handle_key(event.key)
 
     state_machine.update()
     return running
@@ -271,6 +367,7 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
         cooldown_duration=config.cooldown_duration,
         dry_run=dry_run,
     )
+    detector = WaveDetector(config.detection) if config.detection is not None else None
     spinner = SpinnerOverlay()
     result_overlay = ResultOverlay()
 
@@ -280,11 +377,18 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
         running = True
         while running:
             events = pygame.event.get()
-            running = _update_phase(events, state_machine)
+            running = _update_phase(events, state_machine, detector)
 
-            frame_surface = _capture_phase(cap, config, screen_size)
+            frame_surface, detection_result = _capture_phase(cap, config, screen_size, detector)
             if frame_surface is not None:
                 last_frame = frame_surface
+
+            if (
+                detection_result is not None
+                and detection_result.wave_detected
+                and state_machine.state is MirrorState.IDLE
+            ):
+                state_machine.trigger_roll()
 
             _render_phase(screen, last_frame, state_machine, spinner, result_overlay)
 
