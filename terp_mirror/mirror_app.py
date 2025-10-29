@@ -460,25 +460,47 @@ def _render_phase(
     screen_size = screen.get_size()
     rect = screen.get_rect()
 
-    base_point: Optional[tuple[float, float]] = None
-    if frame_size is not None:
-        if detection is not None and detection.centroid is not None:
-            base_point = detection.centroid
-        else:
-            base_point = (frame_size[0] / 2.0, frame_size[1] / 2.0)
+    default_prompt_anchor = (rect.centerx, max(80, rect.centery - rect.height // 4))
+    default_spinner_anchor = rect.center
+    default_result_anchor = rect.center
 
-    def _resolve_anchor(use_calibration: bool) -> tuple[int, int]:
-        if base_point is None or frame_size is None:
-            return rect.center
-        mapping = calibration if use_calibration else None
-        try:
-            return map_point_to_screen(base_point, frame_size, screen_size, mapping)
-        except CalibrationError:
-            return rect.center
+    calibrated_prompt_anchor = default_prompt_anchor
+    calibrated_spinner_anchor = default_spinner_anchor
+    calibrated_result_anchor = default_result_anchor
 
-    prompt_anchor = _resolve_anchor(calibration_config.apply_prompt)
-    spinner_anchor = _resolve_anchor(calibration_config.apply_spinner)
-    result_anchor = _resolve_anchor(calibration_config.apply_result)
+    if (
+        calibration is not None
+        and frame_size is not None
+        and calibration.is_compatible(frame_size, screen_size)
+        and calibration.target_points
+    ):
+        xs = [pt[0] for pt in calibration.target_points]
+        ys = [pt[1] for pt in calibration.target_points]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        center_x = int(round((min_x + max_x) / 2.0))
+        center_y = int(round((min_y + max_y) / 2.0))
+        bbox_height = max(1, max_y - min_y)
+
+        calibrated_spinner_anchor = (center_x, center_y)
+        calibrated_result_anchor = (center_x, center_y)
+
+        prompt_offset = max(80, int(round(bbox_height * 0.35)))
+        prompt_y = max(40, min(screen_size[1] - 40, int(round(min_y - prompt_offset))))
+        calibrated_prompt_anchor = (center_x, prompt_y)
+
+    def _pick_anchor(use_calibration: bool, calibrated: tuple[int, int], fallback: tuple[int, int]) -> tuple[int, int]:
+        return calibrated if use_calibration else fallback
+
+    prompt_anchor = _pick_anchor(
+        calibration_config.apply_prompt, calibrated_prompt_anchor, default_prompt_anchor
+    )
+    spinner_anchor = _pick_anchor(
+        calibration_config.apply_spinner, calibrated_spinner_anchor, default_spinner_anchor
+    )
+    result_anchor = _pick_anchor(
+        calibration_config.apply_result, calibrated_result_anchor, default_result_anchor
+    )
 
     if state_machine.state is MirrorState.IDLE:
         prompt_overlay.draw(screen, "Wave to roll", prompt_anchor, "Raise your hand to start")
@@ -538,7 +560,9 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
         try:
             calibration_mapping = load_calibration_mapping(config.calibration.file)
         except CalibrationError as exc:
-            raise MirrorConfigError(str(exc)) from exc
+            print(f"[mirror] Unable to load calibration: {exc}. Using proportional scaling instead.")
+            calibration_mapping = None
+            calibration_warning_emitted = True
 
     last_frame: Optional[pygame.Surface] = None
     last_detection: Optional[DetectionResult] = None
