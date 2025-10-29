@@ -79,6 +79,10 @@ fine-tune how strict the wave detector behaves without restarting the app:
   flickers after enabling circularity checks). Keep it at or below ~0.05&nbsp;s so
   the detector still samples motion often enough to track deliberate waves.
 
+Recent builds fix the controls so every ROI slider reliably updates the
+rectangle while keeping it inside the camera frame. Dial in the bounds first,
+then fine-tune the HSV thresholds to match the calibrated region.
+
 Enable the detector debug overlay with <kbd>Tab</kbd> to confirm that the ROI
 and HSV mask continue to frame the operator correctly after any adjustments.
 While the overlay is visible you can use the number-row hotkeys to tweak the
