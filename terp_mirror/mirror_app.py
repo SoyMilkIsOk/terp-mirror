@@ -41,8 +41,8 @@ class MirrorConfig:
     roll_duration: float
     result_duration: float
     cooldown_duration: float
-    dry_run: bool = False
     detection: DetectionConfig
+    dry_run: bool = False
 
 
 def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
