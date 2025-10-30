@@ -164,6 +164,13 @@ class PrizeManager:
     def stock_for(self, prize_name: str) -> Optional[int]:
         return self._stock.get(prize_name)
 
+    @property
+    def track_stock_enabled(self) -> bool:
+        return self._track_stock
+
+    def stock_snapshot(self) -> dict[str, Optional[int]]:
+        return dict(self._stock)
+
     def adjust_stock(self, prize_name: str, delta: int) -> Optional[int]:
         if not self._track_stock:
             return None

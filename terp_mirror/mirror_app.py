@@ -7,7 +7,7 @@ import math
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 try:
     import cv2
@@ -27,7 +27,7 @@ from .calibration import (
     load_calibration_mapping,
     map_point_to_screen,
 )
-from .prizes import PrizeManager, PrizeStockConfig
+from .prizes import GRAND_PRIZE_NAME, PrizeManager, PrizeStockConfig
 from .states import MirrorState, MirrorStateMachine
 
 
@@ -554,8 +554,36 @@ class ControlItem:
             new_value = max(self.minimum, new_value)
         if self.maximum is not None:
             new_value = min(self.maximum, new_value)
-        coerced = self._coerce(new_value)
+        try:
+            coerced = self._coerce(new_value, delta, multiplier)
+        except TypeError:
+            coerced = self._coerce(new_value)
         self._setter(coerced)
+
+
+class ControlAction:
+    """Action-style control item that triggers a callable."""
+
+    def __init__(
+        self,
+        label: str,
+        action: Callable[[], None],
+        status_getter: Optional[Callable[[], str]] = None,
+    ) -> None:
+        self.label = label
+        self._action = action
+        self._status_getter = status_getter or (lambda: "")
+
+    def value(self):
+        return self._status_getter()
+
+    def formatted(self) -> str:
+        return self._status_getter()
+
+    def adjust(self, delta: int, multiplier: int = 1) -> None:
+        if delta == 0:
+            return
+        self._action()
 
 
 class ControlPanel:
@@ -566,14 +594,23 @@ class ControlPanel:
         settings: RuntimeSettings,
         state_machine: MirrorStateMachine,
         detector: Optional[WaveDetector],
+        *,
+        config: MirrorConfig,
+        config_path: Path,
+        prize_manager: PrizeManager,
     ) -> None:
         self.settings = settings
         self.state_machine = state_machine
         self.detector = detector
+        self._base_config = config
+        self.config_path = Path(config_path) if config_path is not None else None
+        self.prize_manager = prize_manager
         self.font = pygame.font.Font(None, 26)
         self.header_font = pygame.font.Font(None, 32)
-        self.items: list[ControlItem] = []
+        self.items: list[ControlItem | ControlAction] = []
         self.selected_index = 0
+        self._save_message = "Press ←→ to save"
+        self._save_message_expires = 0.0
         self._build_items()
 
     def _build_items(self) -> None:
@@ -618,37 +655,45 @@ class ControlPanel:
             ),
         ]
 
-        if self.detector is None:
-            return
+        if self.detector is not None:
+            cfg = self.detector.config
 
-        cfg = self.detector.config
-        self.items.extend(
-            [
-                ControlItem(
-                    "Min contour area",
-                    getter=lambda cfg=cfg: cfg.min_contour_area,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "min_contour_area", float(value)),
-                    step=1.0,
+            def _odd_kernel(value: float, delta: int, multiplier: int) -> int:
+                candidate = max(1, int(round(value)))
+                if candidate % 2 == 0:
+                    if delta < 0:
+                        candidate = max(1, candidate - 1)
+                    else:
+                        candidate += 1
+                return candidate
+
+            self.items.extend(
+                [
+                    ControlItem(
+                        "Min contour area",
+                        getter=lambda cfg=cfg: cfg.min_contour_area,
+                        setter=lambda value, cfg=cfg: setattr(cfg, "min_contour_area", float(value)),
+                        step=1.0,
                     minimum=0.0,
                 ),
-                ControlItem(
-                    "Blur kernel",
-                    getter=lambda cfg=cfg: cfg.blur_kernel,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "blur_kernel", int(value)),
-                    step=1,
-                    fmt="{:d}",
-                    minimum=1,
-                    coerce=lambda value: max(1, int(round(value))) | 1,
-                ),
-                ControlItem(
-                    "Morph kernel",
-                    getter=lambda cfg=cfg: cfg.morph_kernel,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "morph_kernel", int(value)),
-                    step=1,
-                    fmt="{:d}",
-                    minimum=1,
-                    coerce=lambda value: max(1, int(round(value))) | 1,
-                ),
+                    ControlItem(
+                        "Blur kernel",
+                        getter=lambda cfg=cfg: cfg.blur_kernel,
+                        setter=lambda value, cfg=cfg: setattr(cfg, "blur_kernel", int(value)),
+                        step=1,
+                        fmt="{:d}",
+                        minimum=1,
+                        coerce=_odd_kernel,
+                    ),
+                    ControlItem(
+                        "Morph kernel",
+                        getter=lambda cfg=cfg: cfg.morph_kernel,
+                        setter=lambda value, cfg=cfg: setattr(cfg, "morph_kernel", int(value)),
+                        step=1,
+                        fmt="{:d}",
+                        minimum=1,
+                        coerce=_odd_kernel,
+                    ),
                 ControlItem(
                     "Morph iterations",
                     getter=lambda cfg=cfg: cfg.morph_iterations,
@@ -832,7 +877,15 @@ class ControlPanel:
                     maximum=255,
                     coerce=lambda value: int(round(value)),
                 ),
-            ]
+                ]
+            )
+
+        self.items.append(
+            ControlAction(
+                "Save config",
+                action=self._save_config,
+                status_getter=self._current_save_status,
+            )
         )
 
     @staticmethod
@@ -911,6 +964,113 @@ class ControlPanel:
             y += surface.get_height() + 4
 
         target.blit(overlay, (target.get_width() - width - 16, 16))
+
+    def _current_save_status(self) -> str:
+        if self._save_message_expires and time.monotonic() > self._save_message_expires:
+            self._save_message = "Press ←→ to save"
+            self._save_message_expires = 0.0
+        return self._save_message
+
+    def _set_save_status(self, message: str, duration: float = 0.0) -> None:
+        self._save_message = message
+        self._save_message_expires = (
+            time.monotonic() + duration if duration > 0.0 else 0.0
+        )
+
+    def _save_config(self) -> None:
+        if not self.config_path:
+            print("[controls] No configuration path available to save.")
+            self._set_save_status("No config path", duration=3.0)
+            return
+
+        payload = self._build_config_payload()
+        try:
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.config_path.open("w", encoding="utf-8") as handle:
+                yaml.safe_dump(payload, handle, sort_keys=False)
+        except (OSError, yaml.YAMLError) as exc:
+            print(f"[controls] Failed to save config: {exc}")
+            self._set_save_status("Save failed", duration=4.0)
+        else:
+            print(f"[controls] Saved configuration to {self.config_path}")
+            self._set_save_status("Saved!", duration=2.5)
+
+    def _build_config_payload(self) -> dict:
+        data: dict[str, object] = {
+            "monitor_index": self._base_config.monitor_index,
+            "rotate_deg": self._base_config.rotate_deg,
+            "mirror": bool(self.settings.mirror_enabled),
+            "camera": {"index": self._base_config.camera_index},
+            "target_fps": int(self.settings.target_fps),
+            "dry_run": bool(self._base_config.dry_run),
+            "timers": {
+                "rolling": float(self.state_machine.roll_duration),
+                "result": float(self.state_machine.result_duration),
+                "cooldown": float(self.state_machine.cooldown_duration),
+            },
+        }
+
+        detection_cfg = None
+        if self.detector is not None:
+            detection_cfg = self.detector.config
+        elif self._base_config.detection is not None:
+            detection_cfg = self._base_config.detection
+
+        if detection_cfg is not None:
+            roi = detection_cfg.roi
+            data["detection"] = {
+                "hsv_min": list(detection_cfg.hsv_lower),
+                "hsv_max": list(detection_cfg.hsv_upper),
+                "blur_kernel": int(detection_cfg.blur_kernel),
+                "morph_kernel": int(detection_cfg.morph_kernel),
+                "morph_iterations": int(detection_cfg.morph_iterations),
+                "min_contour_area": float(detection_cfg.min_contour_area),
+                "min_circularity": float(detection_cfg.min_circularity),
+                "processing_interval": float(detection_cfg.processing_interval),
+                "buffer_duration": float(detection_cfg.buffer_duration),
+                "min_wave_span": float(detection_cfg.min_wave_span),
+                "min_wave_velocity": float(detection_cfg.min_wave_velocity),
+                "cooldown": float(detection_cfg.cooldown),
+                "ir_enabled": bool(detection_cfg.ir_enabled),
+                "ir_buffer_duration": float(detection_cfg.ir_buffer_duration),
+                "ir_score_threshold": float(detection_cfg.ir_score_threshold),
+                "ir_release_threshold": float(detection_cfg.ir_release_threshold),
+                "ir_debounce": float(detection_cfg.ir_debounce),
+                "roi": {
+                    "x": float(roi.x),
+                    "y": float(roi.y),
+                    "width": float(roi.width),
+                    "height": float(roi.height),
+                },
+            }
+
+        calibration = self._base_config.calibration
+        data["calibration"] = {
+            "enabled": bool(calibration.enabled),
+            "file": str(calibration.file) if calibration.file is not None else None,
+            "apply_prompt": bool(calibration.apply_prompt),
+            "apply_spinner": bool(calibration.apply_spinner),
+            "apply_result": bool(calibration.apply_result),
+        }
+
+        if self.prize_manager is not None:
+            prize_block: dict[str, object] = {
+                "track_stock": bool(self.prize_manager.track_stock_enabled),
+            }
+            stock_snapshot = self.prize_manager.stock_snapshot()
+            stock_entries = {
+                name: int(count)
+                for name, count in stock_snapshot.items()
+                if name != GRAND_PRIZE_NAME and count is not None
+            }
+            if stock_entries or prize_block["track_stock"]:
+                prize_block["stock"] = stock_entries
+            grand_count = stock_snapshot.get(GRAND_PRIZE_NAME)
+            if grand_count is not None:
+                prize_block["grand_prize"] = int(grand_count)
+            data["prizes"] = prize_block
+
+        return data
 
 
 class CameraManager:
@@ -1217,10 +1377,21 @@ def _render_phase(
     camera_overlay.draw(target, camera_status)
 
     if diagnostics_data is not None:
-        diagnostics_overlay.draw(target, diagnostics_data)
+        if mirror_enabled:
+            overlay_surface = pygame.Surface(target.get_size(), pygame.SRCALPHA)
+            diagnostics_overlay.draw(overlay_surface, diagnostics_data)
+            flipped_overlay = pygame.transform.flip(overlay_surface, True, False)
+            target.blit(flipped_overlay, (0, 0))
+        else:
+            diagnostics_overlay.draw(target, diagnostics_data)
 
 
-def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> None:
+def run_mirror(
+    config: MirrorConfig,
+    monitor_override: Optional[int] = None,
+    *,
+    config_path: Path = CONFIG_PATH,
+) -> None:
     """Run the mirror display loop using the supplied configuration."""
 
     monitor_index = monitor_override if monitor_override is not None else config.monitor_index
@@ -1247,7 +1418,14 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
         target_fps=config.target_fps,
         mirror_enabled=config.mirror,
     )
-    control_panel = ControlPanel(settings, state_machine, detector)
+    control_panel = ControlPanel(
+        settings,
+        state_machine,
+        detector,
+        config=config,
+        config_path=config_path,
+        prize_manager=prize_manager,
+    )
     spinner = SpinnerOverlay()
     result_overlay = ResultOverlay()
     prompt_overlay = PromptOverlay()
@@ -1400,7 +1578,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     config = load_config(args.config)
     if args.dry_run:
         config = replace(config, dry_run=True)
-    run_mirror(config, monitor_override=args.monitor)
+    run_mirror(config, monitor_override=args.monitor, config_path=args.config)
 
 
 if __name__ == "__main__":
