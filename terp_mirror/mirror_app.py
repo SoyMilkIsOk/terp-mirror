@@ -603,13 +603,15 @@ class ControlPanel:
         self.state_machine = state_machine
         self.detector = detector
         self._base_config = config
-        self.config_path = Path(config_path) if config_path is not None else None
+        self.config_path = (
+            Path(config_path).expanduser() if config_path is not None else None
+        )
         self.prize_manager = prize_manager
         self.font = pygame.font.Font(None, 26)
         self.header_font = pygame.font.Font(None, 32)
         self.items: list[ControlItem | ControlAction] = []
         self.selected_index = 0
-        self._save_message = "Press ←→ to save"
+        self._save_message = "Press Left/Right or Enter to save"
         self._save_message_expires = 0.0
         self._build_items()
 
@@ -936,6 +938,22 @@ class ControlPanel:
             return
         self.items[self.selected_index].adjust(delta, multiplier)
 
+    def activate_selection(self) -> bool:
+        if not self.items:
+            return False
+
+        current = self.items[self.selected_index]
+        if isinstance(current, ControlAction):
+            current.adjust(1)
+            return True
+
+        value = current.value()
+        if isinstance(value, bool):
+            current.adjust(1)
+            return True
+
+        return False
+
     def draw(self, target: pygame.Surface) -> None:
         if not self.items:
             return
@@ -951,7 +969,9 @@ class ControlPanel:
         overlay.blit(header, (16, y))
         y += header.get_height() + 6
         instruction = self.font.render(
-            "↑↓ select | ←→ adjust (hold Shift for ×5)", True, (220, 220, 220)
+            "Up/Down select | Left/Right adjust (hold Shift for x5)",
+            True,
+            (220, 220, 220),
         )
         overlay.blit(instruction, (16, y))
         y += instruction.get_height() + 10
@@ -967,7 +987,7 @@ class ControlPanel:
 
     def _current_save_status(self) -> str:
         if self._save_message_expires and time.monotonic() > self._save_message_expires:
-            self._save_message = "Press ←→ to save"
+            self._save_message = "Press Left/Right or Enter to save"
             self._save_message_expires = 0.0
         return self._save_message
 
@@ -1271,6 +1291,8 @@ def _update_phase(
             multiplier = 5 if event.mod & pygame.KMOD_SHIFT else 1
             control_panel.adjust_selection(1, multiplier)
             handled = True
+        elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            handled = control_panel.activate_selection()
 
         if detector is not None and not handled:
             detector.handle_key(event.key, event.mod)
