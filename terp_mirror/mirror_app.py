@@ -628,8 +628,35 @@ class ControlPanel:
                     "Min contour area",
                     getter=lambda cfg=cfg: cfg.min_contour_area,
                     setter=lambda value, cfg=cfg: setattr(cfg, "min_contour_area", float(value)),
-                    step=100.0,
+                    step=1.0,
                     minimum=0.0,
+                ),
+                ControlItem(
+                    "Blur kernel",
+                    getter=lambda cfg=cfg: cfg.blur_kernel,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "blur_kernel", int(value)),
+                    step=1,
+                    fmt="{:d}",
+                    minimum=1,
+                    coerce=lambda value: max(1, int(round(value))) | 1,
+                ),
+                ControlItem(
+                    "Morph kernel",
+                    getter=lambda cfg=cfg: cfg.morph_kernel,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "morph_kernel", int(value)),
+                    step=1,
+                    fmt="{:d}",
+                    minimum=1,
+                    coerce=lambda value: max(1, int(round(value))) | 1,
+                ),
+                ControlItem(
+                    "Morph iterations",
+                    getter=lambda cfg=cfg: cfg.morph_iterations,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "morph_iterations", int(value)),
+                    step=1,
+                    fmt="{:d}",
+                    minimum=0,
+                    coerce=lambda value: max(0, int(round(value))),
                 ),
                 ControlItem(
                     "Min circularity",
@@ -676,6 +703,19 @@ class ControlPanel:
                     setter=lambda value, cfg=cfg: setattr(cfg, "cooldown", float(value)),
                     step=0.1,
                     minimum=0.0,
+                ),
+                ControlItem(
+                    "IR enabled",
+                    getter=lambda cfg=cfg: cfg.ir_enabled,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "ir_enabled", bool(value)),
+                    step=1,
+                ),
+                ControlItem(
+                    "IR buffer duration",
+                    getter=lambda cfg=cfg: cfg.ir_buffer_duration,
+                    setter=lambda value, cfg=cfg: setattr(cfg, "ir_buffer_duration", float(value)),
+                    step=0.05,
+                    minimum=0.05,
                 ),
                 ControlItem(
                     "IR threshold",
@@ -1098,6 +1138,7 @@ def _render_phase(
     calibration_config: CalibrationConfig,
     camera_status: str,
     detection_paused: bool,
+    mirror_enabled: bool,
 ) -> None:
     if frame_surface is not None:
         target.blit(frame_surface, (0, 0))
@@ -1164,6 +1205,10 @@ def _render_phase(
         except CalibrationError:
             mapped_point = None
         if mapped_point is not None:
+            if mirror_enabled:
+                mirrored_x = screen_size[0] - mapped_point[0]
+                mirrored_x = max(0, min(screen_size[0] - 1, mirrored_x))
+                mapped_point = (mirrored_x, mapped_point[1])
             pygame.draw.circle(target, (255, 0, 0), mapped_point, 14, 3)
 
     if toggles.controls_visible:
@@ -1245,6 +1290,8 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
                 camera_manager, config, screen_size, detector
             )
             if frame_surface is not None:
+                if settings.mirror_enabled:
+                    frame_surface = pygame.transform.flip(frame_surface, True, False)
                 last_frame = frame_surface
             last_detection = detection_result
             if frame_size is not None:
@@ -1314,6 +1361,7 @@ def run_mirror(config: MirrorConfig, monitor_override: Optional[int] = None) -> 
                 config.calibration,
                 camera_status,
                 detector.paused if detector is not None else False,
+                settings.mirror_enabled,
             )
 
             if settings.mirror_enabled:
