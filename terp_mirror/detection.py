@@ -56,6 +56,7 @@ class DetectionResult:
     ir_score: float = 0.0
     mode: str = "color"
     signal_strength: float = 0.0
+    max_contour_area: float = 0.0
 
 
 def _ensure_odd(value: int) -> int:
@@ -88,6 +89,7 @@ class WaveDetector:
                 str,
             ]
         ] = None
+        self._session_max_area: float = 0.0
 
     @property
     def debug_enabled(self) -> bool:
@@ -106,7 +108,7 @@ class WaveDetector:
         status = "paused" if self._paused else "resumed"
         print(f"[detector] Detection {status} by operator hotkey")
 
-    def handle_key(self, key: int, modifiers: int = 0) -> None:
+    def handle_key(self, key: int, modifiers: int = 0) -> bool:
         """Handle key presses for tuning HSV thresholds at runtime."""
 
         adjustments = {
@@ -126,14 +128,15 @@ class WaveDetector:
 
         if key == pygame.K_TAB:
             self.toggle_debug()
-            return
+            return False
 
         if key not in adjustments:
-            return
+            return False
 
         bound, channel, delta = adjustments[key]
         multiplier = 5 if modifiers & pygame.KMOD_SHIFT else 1
         self._adjust_threshold(bound, channel, delta * multiplier)
+        return True
 
     def _adjust_threshold(self, bound: str, channel: int, delta: int) -> None:
         lower = list(self.config.hsv_lower)
@@ -172,6 +175,7 @@ class WaveDetector:
                 ir_score=0.0,
                 mode="paused",
                 signal_strength=0.0,
+                max_contour_area=self._session_max_area,
             )
             self._last_result = paused_result
             return paused_result
@@ -282,6 +286,8 @@ class WaveDetector:
 
         signal_strength = ir_score if mode == "ir" else float(best_area)
 
+        self._session_max_area = max(self._session_max_area, observed_area)
+
         if self._debug_enabled:
             debug_contour = best_contour if best_contour is not None else observed_contour
             debug_area = best_area if best_contour is not None else observed_area
@@ -309,6 +315,7 @@ class WaveDetector:
             ir_score=ir_score,
             mode=mode,
             signal_strength=signal_strength,
+            max_contour_area=self._session_max_area,
         )
         self._last_process_time = process_start
         self._last_result = result

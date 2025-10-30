@@ -8,7 +8,7 @@ import logging
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Mapping, Optional
+from typing import Callable, Iterable, List, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -106,6 +106,7 @@ class PrizeManager:
         rng: Optional[random.Random] = None,
         stock_config: Optional[PrizeStockConfig] = None,
         dry_run: bool = False,
+        change_listener: Optional[Callable[[], None]] = None,
     ) -> None:
         self._catalog = list(catalog) if catalog is not None else list(PRIZE_CATALOG)
         self._rng = rng or random.Random()
@@ -115,6 +116,7 @@ class PrizeManager:
         stock_cfg = stock_config or PrizeStockConfig()
         self._track_stock = bool(stock_cfg.track_stock)
         self._stock: dict[str, Optional[int]] = {}
+        self._change_listener = change_listener
         if self._track_stock:
             for prize in self._catalog:
                 value = stock_cfg.counts.get(prize.name)
@@ -171,6 +173,17 @@ class PrizeManager:
     def stock_snapshot(self) -> dict[str, Optional[int]]:
         return dict(self._stock)
 
+    def register_change_listener(self, callback: Optional[Callable[[], None]]) -> None:
+        self._change_listener = callback
+
+    def _notify_change(self) -> None:
+        if self._change_listener is None:
+            return
+        try:
+            self._change_listener()
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[prizes] Change listener raised an error: {exc}")
+
     def adjust_stock(self, prize_name: str, delta: int) -> Optional[int]:
         if not self._track_stock:
             return None
@@ -178,8 +191,10 @@ class PrizeManager:
         if current is None:
             return None
         new_value = max(0, current + delta)
-        self._stock[prize_name] = new_value
-        log_stock_adjustment(prize_name, delta, new_value)
+        if new_value != current:
+            self._stock[prize_name] = new_value
+            log_stock_adjustment(prize_name, delta, new_value)
+            self._notify_change()
         return new_value
 
     def decrement_stock(self, prize_name: str) -> None:
@@ -188,7 +203,10 @@ class PrizeManager:
         current = self._stock.get(prize_name)
         if current is None:
             return
-        self._stock[prize_name] = max(0, current - 1)
+        new_value = max(0, current - 1)
+        if new_value != current:
+            self._stock[prize_name] = new_value
+            self._notify_change()
 
     # ------------------------------------------------------------------
     # Prize resolution

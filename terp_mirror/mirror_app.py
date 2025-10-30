@@ -59,7 +59,10 @@ class MirrorConfig:
 def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
     """Load the mirror configuration from YAML and validate it."""
 
-    path = config_path or CONFIG_PATH
+    raw_path = config_path or CONFIG_PATH
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = path.resolve()
     if not path.exists():
         raise MirrorConfigError(f"Config file not found: {path}")
 
@@ -451,8 +454,10 @@ class DiagnosticsOverlay:
             if det.mode == "ir":
                 lines.append(f"IR intensity: {det.ir_score:.2f}")
                 lines.append(f"Signal: {det.signal_strength:.2f}")
+                lines.append(f"Max area: {int(det.max_contour_area)}")
             else:
                 lines.append(f"Contour area: {int(det.contour_area)}")
+                lines.append(f"Max area: {int(det.max_contour_area)}")
                 lines.append(f"Signal: {int(det.signal_strength)}")
             lines.append(f"Wave detected: {'YES' if det.wave_detected else 'no'}")
 
@@ -603,16 +608,24 @@ class ControlPanel:
         self.state_machine = state_machine
         self.detector = detector
         self._base_config = config
-        self.config_path = (
-            Path(config_path).expanduser() if config_path is not None else None
-        )
+        if config_path is not None:
+            expanded = Path(config_path).expanduser()
+            try:
+                self.config_path = expanded.resolve(strict=False)
+            except OSError:
+                self.config_path = expanded
+        else:
+            self.config_path = None
         self.prize_manager = prize_manager
         self.font = pygame.font.Font(None, 26)
         self.header_font = pygame.font.Font(None, 32)
         self.items: list[ControlItem | ControlAction] = []
         self.selected_index = 0
-        self._save_message = "Press Left/Right or Enter to save"
+        self._default_save_prompt = "Press Left/Right or Enter to save"
+        self._dirty_save_prompt = "Unsaved changes - press Enter to save"
+        self._save_message = self._default_save_prompt
         self._save_message_expires = 0.0
+        self._dirty = False
         self._build_items()
 
     def _build_items(self) -> None:
@@ -676,8 +689,8 @@ class ControlPanel:
                         getter=lambda cfg=cfg: cfg.min_contour_area,
                         setter=lambda value, cfg=cfg: setattr(cfg, "min_contour_area", float(value)),
                         step=1.0,
-                    minimum=0.0,
-                ),
+                        minimum=0.0,
+                    ),
                     ControlItem(
                         "Blur kernel",
                         getter=lambda cfg=cfg: cfg.blur_kernel,
@@ -696,199 +709,262 @@ class ControlPanel:
                         minimum=1,
                         coerce=_odd_kernel,
                     ),
-                ControlItem(
-                    "Morph iterations",
-                    getter=lambda cfg=cfg: cfg.morph_iterations,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "morph_iterations", int(value)),
-                    step=1,
-                    fmt="{:d}",
-                    minimum=0,
-                    coerce=lambda value: max(0, int(round(value))),
-                ),
-                ControlItem(
-                    "Min circularity",
-                    getter=lambda cfg=cfg: cfg.min_circularity,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "min_circularity", float(value)),
-                    step=0.02,
-                    minimum=0.0,
-                    maximum=1.0,
-                ),
-                ControlItem(
-                    "Processing interval (s)",
-                    getter=lambda cfg=cfg: cfg.processing_interval,
-                    setter=lambda value, cfg=cfg: setattr(
-                        cfg, "processing_interval", float(value)
+                    ControlItem(
+                        "Morph iterations",
+                        getter=lambda cfg=cfg: cfg.morph_iterations,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "morph_iterations", int(value)
+                        ),
+                        step=1,
+                        fmt="{:d}",
+                        minimum=0,
+                        coerce=lambda value: max(0, int(round(value))),
                     ),
-                    step=0.01,
-                    minimum=0.0,
-                    maximum=0.5,
-                ),
-                ControlItem(
-                    "Buffer duration",
-                    getter=lambda cfg=cfg: cfg.buffer_duration,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "buffer_duration", float(value)),
-                    step=0.05,
-                    minimum=0.1,
-                ),
-                ControlItem(
-                    "Min wave span",
-                    getter=lambda cfg=cfg: cfg.min_wave_span,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "min_wave_span", float(value)),
-                    step=0.02,
-                    minimum=0.05,
-                ),
-                ControlItem(
-                    "Min wave velocity",
-                    getter=lambda cfg=cfg: cfg.min_wave_velocity,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "min_wave_velocity", float(value)),
-                    step=0.05,
-                    minimum=0.05,
-                ),
-                ControlItem(
-                    "Detection cooldown",
-                    getter=lambda cfg=cfg: cfg.cooldown,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "cooldown", float(value)),
-                    step=0.1,
-                    minimum=0.0,
-                ),
-                ControlItem(
-                    "IR enabled",
-                    getter=lambda cfg=cfg: cfg.ir_enabled,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "ir_enabled", bool(value)),
-                    step=1,
-                ),
-                ControlItem(
-                    "IR buffer duration",
-                    getter=lambda cfg=cfg: cfg.ir_buffer_duration,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "ir_buffer_duration", float(value)),
-                    step=0.05,
-                    minimum=0.05,
-                ),
-                ControlItem(
-                    "IR threshold",
-                    getter=lambda cfg=cfg: cfg.ir_score_threshold,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "ir_score_threshold", float(value)),
-                    step=0.02,
-                    minimum=0.0,
-                    maximum=1.0,
-                ),
-                ControlItem(
-                    "IR release",
-                    getter=lambda cfg=cfg: cfg.ir_release_threshold,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "ir_release_threshold", float(value)),
-                    step=0.02,
-                    minimum=0.0,
-                    maximum=1.0,
-                ),
-                ControlItem(
-                    "IR debounce",
-                    getter=lambda cfg=cfg: cfg.ir_debounce,
-                    setter=lambda value, cfg=cfg: setattr(cfg, "ir_debounce", float(value)),
-                    step=0.1,
-                    minimum=0.0,
-                ),
-                ControlItem(
-                    "ROI X",
-                    getter=lambda cfg=cfg: cfg.roi.x,
-                    setter=lambda value, cfg=cfg: self._set_roi_value(cfg, "x", float(value)),
-                    step=0.01,
-                    minimum=0.0,
-                    maximum=1.0,
-                ),
-                ControlItem(
-                    "ROI Y",
-                    getter=lambda cfg=cfg: cfg.roi.y,
-                    setter=lambda value, cfg=cfg: self._set_roi_value(cfg, "y", float(value)),
-                    step=0.01,
-                    minimum=0.0,
-                    maximum=1.0,
-                ),
-                ControlItem(
-                    "ROI width",
-                    getter=lambda cfg=cfg: cfg.roi.width,
-                    setter=lambda value, cfg=cfg: self._set_roi_value(cfg, "width", float(value)),
-                    step=0.02,
-                    minimum=0.1,
-                    maximum=1.0,
-                ),
-                ControlItem(
-                    "ROI height",
-                    getter=lambda cfg=cfg: cfg.roi.height,
-                    setter=lambda value, cfg=cfg: self._set_roi_value(cfg, "height", float(value)),
-                    step=0.02,
-                    minimum=0.1,
-                    maximum=1.0,
-                ),
-                ControlItem(
-                    "HSV H lower",
-                    getter=lambda cfg=cfg: cfg.hsv_lower[0],
-                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "lower", 0, int(round(value))),
-                    step=1,
-                    fmt="{:d}",
-                    minimum=0,
-                    maximum=179,
-                    coerce=lambda value: int(round(value)),
-                ),
-                ControlItem(
-                    "HSV H upper",
-                    getter=lambda cfg=cfg: cfg.hsv_upper[0],
-                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "upper", 0, int(round(value))),
-                    step=1,
-                    fmt="{:d}",
-                    minimum=0,
-                    maximum=179,
-                    coerce=lambda value: int(round(value)),
-                ),
-                ControlItem(
-                    "HSV S lower",
-                    getter=lambda cfg=cfg: cfg.hsv_lower[1],
-                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "lower", 1, int(round(value))),
-                    step=2,
-                    fmt="{:d}",
-                    minimum=0,
-                    maximum=255,
-                    coerce=lambda value: int(round(value)),
-                ),
-                ControlItem(
-                    "HSV S upper",
-                    getter=lambda cfg=cfg: cfg.hsv_upper[1],
-                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "upper", 1, int(round(value))),
-                    step=2,
-                    fmt="{:d}",
-                    minimum=0,
-                    maximum=255,
-                    coerce=lambda value: int(round(value)),
-                ),
-                ControlItem(
-                    "HSV V lower",
-                    getter=lambda cfg=cfg: cfg.hsv_lower[2],
-                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "lower", 2, int(round(value))),
-                    step=2,
-                    fmt="{:d}",
-                    minimum=0,
-                    maximum=255,
-                    coerce=lambda value: int(round(value)),
-                ),
-                ControlItem(
-                    "HSV V upper",
-                    getter=lambda cfg=cfg: cfg.hsv_upper[2],
-                    setter=lambda value, cfg=cfg: self._set_hsv(cfg, "upper", 2, int(round(value))),
-                    step=2,
-                    fmt="{:d}",
-                    minimum=0,
-                    maximum=255,
-                    coerce=lambda value: int(round(value)),
-                ),
+                    ControlItem(
+                        "Min circularity",
+                        getter=lambda cfg=cfg: cfg.min_circularity,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "min_circularity", float(value)
+                        ),
+                        step=0.02,
+                        minimum=0.0,
+                        maximum=1.0,
+                    ),
+                    ControlItem(
+                        "Processing interval (s)",
+                        getter=lambda cfg=cfg: cfg.processing_interval,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "processing_interval", float(value)
+                        ),
+                        step=0.01,
+                        minimum=0.0,
+                        maximum=0.5,
+                    ),
+                    ControlItem(
+                        "Buffer duration",
+                        getter=lambda cfg=cfg: cfg.buffer_duration,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "buffer_duration", float(value)
+                        ),
+                        step=0.05,
+                        minimum=0.1,
+                    ),
+                    ControlItem(
+                        "Min wave span",
+                        getter=lambda cfg=cfg: cfg.min_wave_span,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "min_wave_span", float(value)
+                        ),
+                        step=0.02,
+                        minimum=0.05,
+                    ),
+                    ControlItem(
+                        "Min wave velocity",
+                        getter=lambda cfg=cfg: cfg.min_wave_velocity,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "min_wave_velocity", float(value)
+                        ),
+                        step=0.05,
+                        minimum=0.05,
+                    ),
+                    ControlItem(
+                        "Detection cooldown",
+                        getter=lambda cfg=cfg: cfg.cooldown,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "cooldown", float(value)
+                        ),
+                        step=0.1,
+                        minimum=0.0,
+                    ),
+                    ControlItem(
+                        "IR enabled",
+                        getter=lambda cfg=cfg: cfg.ir_enabled,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "ir_enabled", bool(value)
+                        ),
+                        step=1,
+                    ),
+                    ControlItem(
+                        "IR buffer duration",
+                        getter=lambda cfg=cfg: cfg.ir_buffer_duration,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "ir_buffer_duration", float(value)
+                        ),
+                        step=0.05,
+                        minimum=0.05,
+                    ),
+                    ControlItem(
+                        "IR threshold",
+                        getter=lambda cfg=cfg: cfg.ir_score_threshold,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "ir_score_threshold", float(value)
+                        ),
+                        step=0.02,
+                        minimum=0.0,
+                        maximum=1.0,
+                    ),
+                    ControlItem(
+                        "IR release",
+                        getter=lambda cfg=cfg: cfg.ir_release_threshold,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "ir_release_threshold", float(value)
+                        ),
+                        step=0.02,
+                        minimum=0.0,
+                        maximum=1.0,
+                    ),
+                    ControlItem(
+                        "IR debounce",
+                        getter=lambda cfg=cfg: cfg.ir_debounce,
+                        setter=lambda value, cfg=cfg: setattr(
+                            cfg, "ir_debounce", float(value)
+                        ),
+                        step=0.1,
+                        minimum=0.0,
+                    ),
+                    ControlItem(
+                        "ROI X",
+                        getter=lambda cfg=cfg: cfg.roi.x,
+                        setter=lambda value, cfg=cfg: self._set_roi_value(
+                            cfg, "x", float(value)
+                        ),
+                        step=0.01,
+                        minimum=0.0,
+                        maximum=1.0,
+                    ),
+                    ControlItem(
+                        "ROI Y",
+                        getter=lambda cfg=cfg: cfg.roi.y,
+                        setter=lambda value, cfg=cfg: self._set_roi_value(
+                            cfg, "y", float(value)
+                        ),
+                        step=0.01,
+                        minimum=0.0,
+                        maximum=1.0,
+                    ),
+                    ControlItem(
+                        "ROI width",
+                        getter=lambda cfg=cfg: cfg.roi.width,
+                        setter=lambda value, cfg=cfg: self._set_roi_value(
+                            cfg, "width", float(value)
+                        ),
+                        step=0.02,
+                        minimum=0.1,
+                        maximum=1.0,
+                    ),
+                    ControlItem(
+                        "ROI height",
+                        getter=lambda cfg=cfg: cfg.roi.height,
+                        setter=lambda value, cfg=cfg: self._set_roi_value(
+                            cfg, "height", float(value)
+                        ),
+                        step=0.02,
+                        minimum=0.1,
+                        maximum=1.0,
+                    ),
+                    ControlItem(
+                        "HSV H lower",
+                        getter=lambda cfg=cfg: cfg.hsv_lower[0],
+                        setter=lambda value, cfg=cfg: self._set_hsv(
+                            cfg, "lower", 0, int(round(value))
+                        ),
+                        step=1,
+                        fmt="{:d}",
+                        minimum=0,
+                        maximum=179,
+                        coerce=lambda value: int(round(value)),
+                    ),
+                    ControlItem(
+                        "HSV H upper",
+                        getter=lambda cfg=cfg: cfg.hsv_upper[0],
+                        setter=lambda value, cfg=cfg: self._set_hsv(
+                            cfg, "upper", 0, int(round(value))
+                        ),
+                        step=1,
+                        fmt="{:d}",
+                        minimum=0,
+                        maximum=179,
+                        coerce=lambda value: int(round(value)),
+                    ),
+                    ControlItem(
+                        "HSV S lower",
+                        getter=lambda cfg=cfg: cfg.hsv_lower[1],
+                        setter=lambda value, cfg=cfg: self._set_hsv(
+                            cfg, "lower", 1, int(round(value))
+                        ),
+                        step=2,
+                        fmt="{:d}",
+                        minimum=0,
+                        maximum=255,
+                        coerce=lambda value: int(round(value)),
+                    ),
+                    ControlItem(
+                        "HSV S upper",
+                        getter=lambda cfg=cfg: cfg.hsv_upper[1],
+                        setter=lambda value, cfg=cfg: self._set_hsv(
+                            cfg, "upper", 1, int(round(value))
+                        ),
+                        step=2,
+                        fmt="{:d}",
+                        minimum=0,
+                        maximum=255,
+                        coerce=lambda value: int(round(value)),
+                    ),
+                    ControlItem(
+                        "HSV V lower",
+                        getter=lambda cfg=cfg: cfg.hsv_lower[2],
+                        setter=lambda value, cfg=cfg: self._set_hsv(
+                            cfg, "lower", 2, int(round(value))
+                        ),
+                        step=2,
+                        fmt="{:d}",
+                        minimum=0,
+                        maximum=255,
+                        coerce=lambda value: int(round(value)),
+                    ),
+                    ControlItem(
+                        "HSV V upper",
+                        getter=lambda cfg=cfg: cfg.hsv_upper[2],
+                        setter=lambda value, cfg=cfg: self._set_hsv(
+                            cfg, "upper", 2, int(round(value))
+                        ),
+                        step=2,
+                        fmt="{:d}",
+                        minimum=0,
+                        maximum=255,
+                        coerce=lambda value: int(round(value)),
+                    ),
                 ]
             )
 
         self.items.append(
             ControlAction(
                 "Save config",
-                action=self._save_config,
+                action=self.save_config,
                 status_getter=self._current_save_status,
             )
         )
+
+    @staticmethod
+    def _values_changed(before, after) -> bool:
+        if isinstance(before, bool) or isinstance(after, bool):
+            return bool(before) != bool(after)
+        numeric_types = (int, float)
+        if isinstance(before, numeric_types) or isinstance(after, numeric_types):
+            try:
+                return not math.isclose(float(before), float(after), rel_tol=1e-9, abs_tol=1e-6)
+            except (TypeError, ValueError):
+                return before != after
+        return before != after
+
+    def mark_dirty(self) -> None:
+        if not self._dirty:
+            self._dirty = True
+        self._set_save_status(self._dirty_save_prompt)
+
+    @property
+    def has_unsaved_changes(self) -> bool:
+        return self._dirty
 
     @staticmethod
     def _set_hsv(config: DetectionConfig, bound: str, channel: int, value: int) -> None:
@@ -934,9 +1010,17 @@ class ControlPanel:
         self.selected_index = (self.selected_index + delta) % len(self.items)
 
     def adjust_selection(self, delta: int, multiplier: int = 1) -> None:
-        if not self.items:
+        if not self.items or delta == 0:
             return
-        self.items[self.selected_index].adjust(delta, multiplier)
+        current = self.items[self.selected_index]
+        if isinstance(current, ControlAction):
+            current.adjust(delta, multiplier)
+            return
+        before = current.value()
+        current.adjust(delta, multiplier)
+        after = current.value()
+        if self._values_changed(before, after):
+            self.mark_dirty()
 
     def activate_selection(self) -> bool:
         if not self.items:
@@ -949,7 +1033,11 @@ class ControlPanel:
 
         value = current.value()
         if isinstance(value, bool):
+            before = value
             current.adjust(1)
+            after = current.value()
+            if self._values_changed(before, after):
+                self.mark_dirty()
             return True
 
         return False
@@ -987,8 +1075,13 @@ class ControlPanel:
 
     def _current_save_status(self) -> str:
         if self._save_message_expires and time.monotonic() > self._save_message_expires:
-            self._save_message = "Press Left/Right or Enter to save"
+            if self._dirty:
+                self._save_message = self._dirty_save_prompt
+            else:
+                self._save_message = self._default_save_prompt
             self._save_message_expires = 0.0
+        if self._dirty and self._save_message == self._default_save_prompt:
+            self._save_message = self._dirty_save_prompt
         return self._save_message
 
     def _set_save_status(self, message: str, duration: float = 0.0) -> None:
@@ -997,10 +1090,11 @@ class ControlPanel:
             time.monotonic() + duration if duration > 0.0 else 0.0
         )
 
-    def _save_config(self) -> None:
+    def save_config(self, *, auto: bool = False) -> None:
         if not self.config_path:
             print("[controls] No configuration path available to save.")
-            self._set_save_status("No config path", duration=3.0)
+            if not auto:
+                self._set_save_status("No config path", duration=3.0)
             return
 
         payload = self._build_config_payload()
@@ -1010,10 +1104,18 @@ class ControlPanel:
                 yaml.safe_dump(payload, handle, sort_keys=False)
         except (OSError, yaml.YAMLError) as exc:
             print(f"[controls] Failed to save config: {exc}")
-            self._set_save_status("Save failed", duration=4.0)
+            if not auto:
+                self._set_save_status("Save failed", duration=4.0)
+            self._dirty = True
         else:
-            print(f"[controls] Saved configuration to {self.config_path}")
-            self._set_save_status("Saved!", duration=2.5)
+            if auto:
+                print(f"[controls] Auto-saved configuration to {self.config_path}")
+                self._save_message = self._default_save_prompt
+                self._save_message_expires = 0.0
+            else:
+                print(f"[controls] Saved configuration to {self.config_path}")
+                self._set_save_status("Saved!", duration=2.5)
+            self._dirty = False
 
     def _build_config_payload(self) -> dict:
         data: dict[str, object] = {
@@ -1270,12 +1372,14 @@ def _update_phase(
             new_value = prize_manager.adjust_stock(selection, 1)
             if new_value is not None:
                 print(f"[prizes] {selection} stock increased to {new_value}")
+                control_panel.mark_dirty()
             handled = True
         elif event.unicode == "-":
             selection = prize_manager.current_selection()
             new_value = prize_manager.adjust_stock(selection, -1)
             if new_value is not None:
                 print(f"[prizes] {selection} stock decreased to {new_value}")
+                control_panel.mark_dirty()
             handled = True
         elif event.key == pygame.K_UP:
             control_panel.move_selection(-1)
@@ -1295,7 +1399,8 @@ def _update_phase(
             handled = control_panel.activate_selection()
 
         if detector is not None and not handled:
-            detector.handle_key(event.key, event.mod)
+            if detector.handle_key(event.key, event.mod):
+                control_panel.mark_dirty()
 
     state_machine.update()
     return running, manual_triggered
@@ -1448,6 +1553,7 @@ def run_mirror(
         config_path=config_path,
         prize_manager=prize_manager,
     )
+    prize_manager.register_change_listener(control_panel.mark_dirty)
     spinner = SpinnerOverlay()
     result_overlay = ResultOverlay()
     prompt_overlay = PromptOverlay()
@@ -1573,6 +1679,8 @@ def run_mirror(
             pygame.display.flip()
             clock.tick(settings.target_fps)
     finally:
+        if control_panel.has_unsaved_changes:
+            control_panel.save_config(auto=True)
         camera_manager.close()
         pygame.quit()
 
@@ -1597,10 +1705,13 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
 
     args = parser.parse_args(argv)
-    config = load_config(args.config)
+    config_path = Path(args.config).expanduser()
+    if not config_path.is_absolute():
+        config_path = config_path.resolve()
+    config = load_config(config_path)
     if args.dry_run:
         config = replace(config, dry_run=True)
-    run_mirror(config, monitor_override=args.monitor, config_path=args.config)
+    run_mirror(config, monitor_override=args.monitor, config_path=config_path)
 
 
 if __name__ == "__main__":
