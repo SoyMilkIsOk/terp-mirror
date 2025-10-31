@@ -1,6 +1,7 @@
 monitor_index: 1
 control_monitor_index: 0
 rotate_deg: 0
+ui_rotate_deg: 0
 mirror: true
 camera:
   tracking_index: 0

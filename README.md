@@ -12,6 +12,7 @@ options without modifying the code.
 monitor_index: 1          # Projector display index (audience view)
 control_monitor_index: 0  # MacBook/control display index
 rotate_deg: 90
+ui_rotate_deg: 0          # Rotation applied to UI overlays (spinner, prompts, etc.)
 mirror: true
 camera:
   tracking_index: 0       # Camera pointed at the stage for wave detection
@@ -28,6 +29,9 @@ timers:
 * `control_monitor_index` &mdash; Display that hosts the operator/debug window.
 * `rotate_deg` &mdash; Rotation applied to each frame. Supported values are
   `0`, `90`, `-90`, `180`, and `-180` degrees.
+* `ui_rotate_deg` &mdash; Rotate the on-screen overlays (spinner, prompts, prize card)
+  while leaving the camera feed orientation untouched. Accepts the same values as
+  `rotate_deg` and defaults to `0`.
 * `mirror` &mdash; When `true`, the feed is mirrored horizontally. You can also
   toggle mirroring at runtime from the controls panel while calibrating or
   testing to verify the orientation looks correct.
@@ -87,6 +91,9 @@ fine-tune how strict the wave detector behaves without restarting the app:
 * **Mirror output** &mdash; Flip the projector view horizontally without restarting
   the app. Handy while dialing in calibration so you can confirm text and
   prompts read correctly.
+* **UI rotation** &mdash; Rotate the spinner, prompt, and prize overlays in 90°
+  increments to match cameras that are mounted sideways. The camera feed remains
+  upright; only the pop-up UI elements rotate.
 * **Min contour area** &mdash; Ignore blobs smaller than this number of pixels.
 * **Min circularity** &mdash; Reject candidates whose contour circularity
   (`4πA / P²`) falls below the threshold. Rounder hands or props score closer to

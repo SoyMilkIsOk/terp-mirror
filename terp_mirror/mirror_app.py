@@ -50,6 +50,7 @@ class MirrorConfig:
     monitor_index: int
     control_monitor_index: int
     rotate_deg: int
+    ui_rotate_deg: int
     mirror: bool
     tracking_camera_index: int
     display_camera_index: int
@@ -102,6 +103,14 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
     if rotate_deg not in {0, 90, -90, 180, -180}:
         raise MirrorConfigError("rotate_deg must be one of {0, 90, -90, 180, -180}.")
 
+    ui_rotate_raw = data.get("ui_rotate_deg", 0)
+    try:
+        ui_rotate_deg = int(ui_rotate_raw)
+    except (TypeError, ValueError) as exc:
+        raise MirrorConfigError("ui_rotate_deg must be an integer.") from exc
+    if ui_rotate_deg not in {0, 90, -90, 180, -180}:
+        raise MirrorConfigError("ui_rotate_deg must be one of {0, 90, -90, 180, -180}.")
+
     timers_cfg = data.get("timers", {})
     try:
         roll_duration = float(timers_cfg.get("rolling", 3.0))
@@ -125,6 +134,7 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         monitor_index=int(data["monitor_index"]),
         control_monitor_index=int(data.get("control_monitor_index", data["monitor_index"])),
         rotate_deg=rotate_deg,
+        ui_rotate_deg=ui_rotate_deg,
         mirror=bool(data["mirror"]),
         tracking_camera_index=tracking_camera_index,
         display_camera_index=display_camera_index,
@@ -312,6 +322,17 @@ def _rotate_frame(frame, rotate_deg: int):
     raise MirrorConfigError("rotate_deg must be one of {0, 90, -90, 180, -180}.")
 
 
+def _rotate_ui_surface(surface: pygame.Surface, rotate_deg: int) -> pygame.Surface:
+    """Rotate a UI surface while preserving alpha transparency."""
+
+    if rotate_deg == 0:
+        return surface
+    if rotate_deg not in {0, 90, -90, 180, -180}:
+        raise MirrorConfigError("ui_rotate_deg must be one of {0, 90, -90, 180, -180}.")
+
+    return pygame.transform.rotate(surface, -rotate_deg)
+
+
 def _resolve_display_size(monitor_index: int) -> tuple[int, int]:
     """Return the full resolution for the requested monitor."""
 
@@ -343,6 +364,7 @@ class RuntimeSettings:
 
     target_fps: int
     mirror_enabled: bool
+    ui_rotation_deg: int
 
 
 @dataclass
@@ -659,6 +681,24 @@ class ControlPanel:
                 setter=lambda value: setattr(self.settings, "mirror_enabled", bool(value)),
                 step=1,
                 fmt="{}",
+            ),
+            ControlItem(
+                "UI rotation",
+                getter=lambda: self.settings.ui_rotation_deg,
+                setter=lambda value: setattr(self.settings, "ui_rotation_deg", int(value)),
+                step=90,
+                fmt="{:d}°",
+                coerce=lambda value, delta, multiplier, steps=(-180, -90, 0, 90, 180), settings=self.settings: (
+                    steps[
+                        (
+                            (steps.index(settings.ui_rotation_deg)
+                            if settings.ui_rotation_deg in steps
+                            else steps.index(0))
+                            + int(delta or 0)
+                        )
+                        % len(steps)
+                    ]
+                ),
             ),
             ControlItem(
                 "Target FPS",
@@ -1145,6 +1185,7 @@ class ControlPanel:
             "monitor_index": self._base_config.monitor_index,
             "control_monitor_index": self._base_config.control_monitor_index,
             "rotate_deg": self._base_config.rotate_deg,
+            "ui_rotate_deg": int(self.settings.ui_rotation_deg),
             "mirror": bool(self.settings.mirror_enabled),
             "camera": self._build_camera_payload(),
             "target_fps": int(self.settings.target_fps),
@@ -1505,9 +1546,10 @@ def _render_phase(
     frame_size: Optional[tuple[int, int]],
     calibration: Optional[CalibrationMapping],
     calibration_config: CalibrationConfig,
-    camera_status: str,
+    camera_status: Sequence[str] | str,
     detection_paused: bool,
     mirror_enabled: bool,
+    ui_rotation_deg: int,
 ) -> None:
     if frame_surface is not None:
         target.blit(frame_surface, (0, 0))
@@ -1559,14 +1601,22 @@ def _render_phase(
         calibration_config.apply_result, calibrated_result_anchor, default_result_anchor
     )
 
+    overlay_target = target if ui_rotation_deg == 0 else pygame.Surface(target.get_size(), pygame.SRCALPHA)
+
     if detection_paused:
-        prompt_overlay.draw(target, "Detection paused", prompt_anchor, "Press P to resume")
+        prompt_overlay.draw(
+            overlay_target, "Detection paused", prompt_anchor, "Press P to resume"
+        )
     elif state_machine.state is MirrorState.IDLE:
-        prompt_overlay.draw(target, "Wave to roll", prompt_anchor, "Raise your hand to start")
+        prompt_overlay.draw(
+            overlay_target, "Wave to roll", prompt_anchor, "Raise your hand to start"
+        )
     elif state_machine.state is MirrorState.ROLLING:
-        spinner.draw(target, state_machine.time_in_state() * 2 * math.pi, spinner_anchor)
+        spinner.draw(
+            overlay_target, state_machine.time_in_state() * 2 * math.pi, spinner_anchor
+        )
     elif state_machine.state is MirrorState.RESULT:
-        result_overlay.draw(target, state_machine.current_prize, result_anchor)
+        result_overlay.draw(overlay_target, state_machine.current_prize, result_anchor)
 
     if detection is not None and detection.centroid is not None and frame_size is not None:
         try:
@@ -1578,21 +1628,26 @@ def _render_phase(
                 mirrored_x = screen_size[0] - mapped_point[0]
                 mirrored_x = max(0, min(screen_size[0] - 1, mirrored_x))
                 mapped_point = (mirrored_x, mapped_point[1])
-            pygame.draw.circle(target, (255, 0, 0), mapped_point, 14, 3)
+            pygame.draw.circle(overlay_target, (255, 0, 0), mapped_point, 14, 3)
 
     if toggles.controls_visible:
-        prize_overlay.draw(target, state_machine.prize_manager)
-        control_panel.draw(target)
-    camera_overlay.draw(target, camera_status)
+        prize_overlay.draw(overlay_target, state_machine.prize_manager)
+        control_panel.draw(overlay_target)
+    camera_overlay.draw(overlay_target, camera_status)
 
     if diagnostics_data is not None:
         if mirror_enabled:
             overlay_surface = pygame.Surface(target.get_size(), pygame.SRCALPHA)
             diagnostics_overlay.draw(overlay_surface, diagnostics_data)
             flipped_overlay = pygame.transform.flip(overlay_surface, True, False)
-            target.blit(flipped_overlay, (0, 0))
+            overlay_target.blit(flipped_overlay, (0, 0))
         else:
-            diagnostics_overlay.draw(target, diagnostics_data)
+            diagnostics_overlay.draw(overlay_target, diagnostics_data)
+
+    if overlay_target is not target:
+        rotated_overlay = _rotate_ui_surface(overlay_target, ui_rotation_deg)
+        rect = rotated_overlay.get_rect(center=target.get_rect().center)
+        target.blit(rotated_overlay, rect)
 
 
 def _draw_picture_in_picture(
@@ -1654,6 +1709,7 @@ def run_mirror(
     settings = RuntimeSettings(
         target_fps=config.target_fps,
         mirror_enabled=config.mirror,
+        ui_rotation_deg=config.ui_rotate_deg,
     )
     control_panel = ControlPanel(
         settings,
@@ -1794,6 +1850,7 @@ def run_mirror(
                 control_camera_messages,
                 detector.paused if detector is not None else False,
                 False,
+                0,
             )
 
             if toggles.dual_camera_preview and last_display_frame is not None:
@@ -1829,6 +1886,7 @@ def run_mirror(
                 [f"Display camera: {display_status}"],
                 detector.paused if detector is not None else False,
                 settings.mirror_enabled,
+                settings.ui_rotation_deg,
             )
 
             if settings.mirror_enabled:
