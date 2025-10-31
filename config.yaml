@@ -6,6 +6,9 @@ ui_offsets:
   prompt:
     x: -30
     y: -355
+  result:
+    x: 0
+    y: 0
 mirror: true
 camera:
   tracking_index: 0
@@ -54,9 +57,9 @@ calibration:
 prizes:
   track_stock: true
   stock:
-    Candy + Sticker: 82
-    Terp Scoop: 55
-    Lighter Case: 31
-    Bong Rip: 32
-    T-Shirt: 10
+    Terp Scoop: 70
+    Candy + Sticker: 70
+    Coupon: 42
+    Lighter Case: 25
+    T-Shirt: 6
   grand_prize: 0

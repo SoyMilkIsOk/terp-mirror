@@ -66,6 +66,7 @@ class MirrorConfig:
     rotate_deg: int
     ui_rotate_deg: int
     prompt_offset: tuple[int, int]
+    result_offset: tuple[int, int]
     mirror: bool
     tracking_camera_index: int
     display_camera_index: int
@@ -92,7 +93,7 @@ def _parse_offset_entry(value, name: str) -> tuple[int, int]:
     return (x, y)
 
 
-def _clamp_prompt_offset(value: int) -> int:
+def _clamp_ui_offset(value: int) -> int:
     return max(-PROMPT_OFFSET_LIMIT, min(PROMPT_OFFSET_LIMIT, int(value)))
 
 
@@ -155,13 +156,17 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         raise MirrorConfigError("ui_rotate_deg must be one of {0, 90, -90, 180, -180}.")
 
     prompt_offset = (0, 0)
+    result_offset = (0, 0)
     ui_offsets_cfg = data.get("ui_offsets")
     if ui_offsets_cfg is not None:
         if not isinstance(ui_offsets_cfg, dict):
             raise MirrorConfigError("ui_offsets must be a mapping with a 'prompt' entry.")
         prompt_offset = _parse_offset_entry(ui_offsets_cfg.get("prompt"), "ui_offsets.prompt")
+        result_offset = _parse_offset_entry(ui_offsets_cfg.get("result"), "ui_offsets.result")
     if "prompt_offset" in data:
         prompt_offset = _parse_offset_entry(data.get("prompt_offset"), "prompt_offset")
+    if "result_offset" in data:
+        result_offset = _parse_offset_entry(data.get("result_offset"), "result_offset")
 
     timers_cfg = data.get("timers", {})
     try:
@@ -188,6 +193,7 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         rotate_deg=rotate_deg,
         ui_rotate_deg=ui_rotate_deg,
         prompt_offset=prompt_offset,
+        result_offset=result_offset,
         mirror=bool(data["mirror"]),
         tracking_camera_index=tracking_camera_index,
         display_camera_index=display_camera_index,
@@ -420,6 +426,8 @@ class RuntimeSettings:
     ui_rotation_deg: int
     prompt_offset_x: int
     prompt_offset_y: int
+    result_offset_x: int
+    result_offset_y: int
 
 
 @dataclass
@@ -483,6 +491,8 @@ class ResultOverlay:
             ("sticker", "candy"),
             ("scoop", "2pk"),
             ("2pk", "2pk"),
+            ("coupon", "coupon"),
+            ("discount", "coupon"),
         )
         self._load_prize_images()
 
@@ -495,6 +505,7 @@ class ResultOverlay:
             "2pk": "2pk.png",
             "bong": "bong.png",
             "candy": "candy.png",
+            "coupon": "coupon.png",
         }
         for key, filename in asset_files.items():
             path = self._image_dir / filename
@@ -902,6 +913,30 @@ class ControlPanel:
                 getter=lambda settings=self.settings: settings.prompt_offset_y,
                 setter=lambda value, settings=self.settings: setattr(
                     settings, "prompt_offset_y", int(round(value))
+                ),
+                step=5,
+                fmt="{:d}px",
+                minimum=-PROMPT_OFFSET_LIMIT,
+                maximum=PROMPT_OFFSET_LIMIT,
+                coerce=lambda value: int(round(value)),
+            ),
+            ControlItem(
+                "Prize banner X offset",
+                getter=lambda settings=self.settings: settings.result_offset_x,
+                setter=lambda value, settings=self.settings: setattr(
+                    settings, "result_offset_x", int(round(value))
+                ),
+                step=5,
+                fmt="{:d}px",
+                minimum=-PROMPT_OFFSET_LIMIT,
+                maximum=PROMPT_OFFSET_LIMIT,
+                coerce=lambda value: int(round(value)),
+            ),
+            ControlItem(
+                "Prize banner Y offset",
+                getter=lambda settings=self.settings: settings.result_offset_y,
+                setter=lambda value, settings=self.settings: setattr(
+                    settings, "result_offset_y", int(round(value))
                 ),
                 step=5,
                 fmt="{:d}px",
@@ -1400,6 +1435,10 @@ class ControlPanel:
                     "x": int(self.settings.prompt_offset_x),
                     "y": int(self.settings.prompt_offset_y),
                 },
+                "result": {
+                    "x": int(self.settings.result_offset_x),
+                    "y": int(self.settings.result_offset_y),
+                },
             },
             "mirror": bool(self.settings.mirror_enabled),
             "camera": self._build_camera_payload(),
@@ -1787,6 +1826,7 @@ def _render_phase(
     detection_paused: bool,
     mirror_enabled: bool,
     prompt_offset: tuple[int, int],
+    result_offset: tuple[int, int],
     ui_rotation_deg: int,
 ) -> None:
     if toggles.blackout_display:
@@ -1847,6 +1887,7 @@ def _render_phase(
         return (int(anchor[0] + offset[0]), int(anchor[1] + offset[1]))
 
     prompt_anchor = _apply_offset(prompt_anchor, prompt_offset)
+    result_anchor = _apply_offset(result_anchor, result_offset)
     overlay_target = target if ui_rotation_deg == 0 else pygame.Surface(target.get_size(), pygame.SRCALPHA)
     if overlay_target is not target:
         overlay_target.fill((0, 0, 0, 0))
@@ -2001,8 +2042,10 @@ def run_mirror(
         target_fps=config.target_fps,
         mirror_enabled=config.mirror,
         ui_rotation_deg=config.ui_rotate_deg,
-        prompt_offset_x=_clamp_prompt_offset(config.prompt_offset[0]),
-        prompt_offset_y=_clamp_prompt_offset(config.prompt_offset[1]),
+        prompt_offset_x=_clamp_ui_offset(config.prompt_offset[0]),
+        prompt_offset_y=_clamp_ui_offset(config.prompt_offset[1]),
+        result_offset_x=_clamp_ui_offset(config.result_offset[0]),
+        result_offset_y=_clamp_ui_offset(config.result_offset[1]),
     )
     control_panel = ControlPanel(
         settings,
@@ -2148,6 +2191,7 @@ def run_mirror(
                 detector.paused if detector is not None else False,
                 False,
                 (settings.prompt_offset_x, settings.prompt_offset_y),
+                (settings.result_offset_x, settings.result_offset_y),
                 0,
             )
 
@@ -2185,6 +2229,7 @@ def run_mirror(
                 detector.paused if detector is not None else False,
                 settings.mirror_enabled,
                 (settings.prompt_offset_x, settings.prompt_offset_y),
+                (settings.result_offset_x, settings.result_offset_y),
                 settings.ui_rotation_deg,
             )
 
