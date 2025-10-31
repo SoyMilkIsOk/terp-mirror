@@ -6,6 +6,9 @@ ui_offsets:
   prompt:
     x: -30
     y: -355
+  result:
+    x: 70
+    y: 50
 mirror: true
 camera:
   tracking_index: 0
@@ -14,7 +17,7 @@ target_fps: 60
 dry_run: false
 timers:
   rolling: 1.5
-  result: 3.0
+  result: 7.0
   cooldown: 0.5
 detection:
   hsv_min:
@@ -38,7 +41,7 @@ detection:
   ir_enabled: true
   ir_buffer_duration: 0.10000000000000002
   ir_score_threshold: 0.3899999999999998
-  ir_release_threshold: 0.6200000000000001
+  ir_release_threshold: 0.3
   ir_debounce: 0.2
   roi:
     x: 0.0
@@ -54,9 +57,9 @@ calibration:
 prizes:
   track_stock: true
   stock:
-    Candy + Sticker: 82
-    Terp Scoop: 55
-    Lighter Case: 31
-    Bong Rip: 32
-    T-Shirt: 10
+    Terp Scoop: 67
+    Candy + Sticker: 69
+    Coupon: 41
+    Lighter Case: 24
+    T-Shirt: 6
   grand_prize: 0

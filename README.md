@@ -17,6 +17,9 @@ ui_offsets:
   prompt:
     x: 0                  # Horizontal pixel offset for the wave prompt
     y: 0                  # Vertical pixel offset for the wave prompt
+  result:
+    x: 0                  # Horizontal pixel offset for the YOU WIN banner
+    y: 0                  # Vertical pixel offset for the YOU WIN banner
 mirror: true
 camera:
   tracking_index: 0       # Camera pointed at the stage for wave detection
@@ -38,9 +41,12 @@ timers:
   `rotate_deg` and defaults to `0`.
 * `ui_offsets.prompt` &mdash; Pixel nudges applied to the wave prompt before any
   rotation. Adjust these when a rotated projector makes the "Cast a Spell" copy sit
-  too far from the physical top edge. The offsets now operate in the rotated
-  coordinate space so you can slide the prompt across the full projector FOV even
-  when the UI is spun 90°.
+  too far from the physical top edge. The offsets operate in the rotated coordinate
+  space so you can slide the prompt across the full projector FOV even when the UI
+  is spun 90°.
+* `ui_offsets.result` &mdash; Horizontal/vertical offsets for the red "YOU WIN"
+  banner. Use these values when you want to float the prize card away from dead
+  center without touching the calibration data.
 * `mirror` &mdash; When `true`, the feed is mirrored horizontally. You can also
   toggle mirroring at runtime from the controls panel while calibrating or
   testing to verify the orientation looks correct.
@@ -51,11 +57,12 @@ timers:
 * `target_fps` &mdash; Desired update rate for the projector display.
 * `timers.rolling` &mdash; Seconds spent animating the spinner before revealing a result.
 * `timers.result` &mdash; Seconds the placeholder prize card stays on screen.
-  The prize banner now shows a transparent, red "YOU WIN" frame rendered in the
+  The prize banner shows a transparent, red "YOU WIN" frame rendered in the
   MyFont-v2 Halloween typeface (with graceful fallbacks) so it pops on the
-  projector without the blinding white background. It auto-centers on the screen
-  and scales to roughly half of the available width/height so the reward message
-  stays prominent without overwhelming the shot.
+  projector without the blinding white background. It scales to roughly half of
+  the available width/height by default; use the UI result offsets (or their
+  matching control panel sliders) whenever you need to nudge the banner away from
+  dead center.
 * `timers.cooldown` &mdash; Seconds to wait before returning to the idle camera feed.
 
 ## Running the mirror
@@ -103,11 +110,11 @@ inside the control window.
 
 The default prize weights match the latest booth giveaway mix:
 
-* **Candy + Sticker** &mdash; 1 in 3 chance.
-* **Terp Scoop** &mdash; 1 in 3 chance.
-* **Lighter Case** &mdash; 1 in 5 chance.
-* **Bong Rip** &mdash; 1 in 8 chance.
-* **T-Shirt** &mdash; 1 in 30 chance.
+* **Terp Scoop** &mdash; 33% chance.
+* **Candy + Sticker** &mdash; 33% chance.
+* **Coupon** &mdash; 20% chance (paired with `coupon.png`).
+* **Lighter Case** &mdash; 12% chance.
+* **T-Shirt** &mdash; 3% chance.
 
 The grand prize is only awarded when the operator forces it via
 <kbd>⌃ Ctrl</kbd> + <kbd>G</kbd>.
@@ -129,8 +136,10 @@ fine-tune how strict the wave detector behaves without restarting the app:
   below to keep the message pinned to the physical top edge after rotation.
 * **Wave text X/Y offset** &mdash; Move the red "Cast a Spell / Use the Terpwand"
   prompt horizontally or vertically (in 5px steps) so it sits flush with the
-  desired edge no matter how the projector is rotated. The prize banner now
-  remains centered and scaled automatically, so no separate offsets are needed.
+  desired edge no matter how the projector is rotated.
+* **Prize banner X/Y offset** &mdash; Slide the red "YOU WIN" banner across the
+  frame (also in 5px steps) when you need the prize card to hover away from
+  center for a particular booth layout.
 * **Min contour area** &mdash; Ignore blobs smaller than this number of pixels.
 * **Min circularity** &mdash; Reject candidates whose contour circularity
   (`4πA / P²`) falls below the threshold. Rounder hands or props score closer to
