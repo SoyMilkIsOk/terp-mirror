@@ -31,11 +31,11 @@ class PrizeStockConfig:
 
 # Core prize catalog excluding the grand prize. Edit this list to update odds.
 PRIZE_CATALOG: List[Prize] = [
-    Prize("Candy + Stickers", 33, "A sweet treat and some Terp Mirror swag."),
-    Prize("OG Terpscoop", 33, "A classic Terpscoop of your choosing."),
-    Prize("Lighter Case", 20, "A sleek case for your lighter. Lots of designs!"),
-    Prize("XL Terpscoop", 10, "An extra-large Terpscoop for big scoops."),
-    Prize("Terpz T-Shirt", 3, "A comfy Terpz branded t-shirt."),
+    Prize("Candy + Sticker", 40, "A sweet treat paired with a Terp Mirror sticker."),
+    Prize("Terp Scoop", 40, "Scoop up a terp-tastic treat on the house."),
+    Prize("Lighter Case", 24, "A sleek lighter case with plenty of design options."),
+    Prize("Bong Rip", 15, "Head to the dab bar for a celebratory rip."),
+    Prize("T-Shirt", 4, "Rock a fresh Terp Mirror tee."),
 ]
 
 GRAND_PRIZE_NAME = "Grand Prize"

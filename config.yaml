@@ -20,12 +20,12 @@ detection:
   hsv_min:
   - 0
   - 0
-  - 255
+  - 230
   hsv_max:
   - 0
   - 255
   - 255
-  blur_kernel: 15
+  blur_kernel: 3
   morph_kernel: 1
   morph_iterations: 1
   min_contour_area: 1.0
@@ -36,14 +36,14 @@ detection:
   min_wave_velocity: 0.05
   cooldown: 1.5
   ir_enabled: true
-  ir_buffer_duration: 0.25
-  ir_score_threshold: 0.08999999999999975
-  ir_release_threshold: 0.07999999999999984
+  ir_buffer_duration: 0.10000000000000002
+  ir_score_threshold: 0.3899999999999998
+  ir_release_threshold: 0.6200000000000001
   ir_debounce: 0.2
   roi:
     x: 0.0
     y: 0.0
-    width: 0.8800000000000001
+    width: 0.74
     height: 1.0
 calibration:
   enabled: false
@@ -54,9 +54,9 @@ calibration:
 prizes:
   track_stock: true
   stock:
-    Candy + Stickers: 27
-    OG Terpscoop: 50
-    Lighter Case: 27
-    XL Terpscoop: 0
-    Terpz T-Shirt: 16
-  grand_prize: 1
+    Candy + Sticker: 82
+    Terp Scoop: 55
+    Lighter Case: 31
+    Bong Rip: 32
+    T-Shirt: 10
+  grand_prize: 0
