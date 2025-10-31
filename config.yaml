@@ -1,21 +1,26 @@
 monitor_index: 1
 control_monitor_index: 0
 rotate_deg: 0
+ui_rotate_deg: 90
+ui_offsets:
+  prompt:
+    x: -30
+    y: -355
 mirror: true
 camera:
   tracking_index: 0
   display_index: 1
-target_fps: 60
+target_fps: 91
 dry_run: false
 timers:
-  rolling: 1.5
+  rolling: 1.75
   result: 2.0
   cooldown: 2.0
 detection:
   hsv_min:
   - 0
   - 0
-  - 255
+  - 78
   hsv_max:
   - 0
   - 255
@@ -25,16 +30,16 @@ detection:
   morph_iterations: 1
   min_contour_area: 1.0
   min_circularity: 0.08999999999999975
-  processing_interval: 0.04
-  buffer_duration: 0.6
+  processing_interval: 0.01
+  buffer_duration: 0.8000000000000002
   min_wave_span: 0.05
   min_wave_velocity: 0.05
   cooldown: 1.5
   ir_enabled: true
-  ir_buffer_duration: 0.35
-  ir_score_threshold: 0.12999999999999975
+  ir_buffer_duration: 0.25
+  ir_score_threshold: 0.10999999999999975
   ir_release_threshold: 0.05999999999999983
-  ir_debounce: 0.8
+  ir_debounce: 0.6000000000000001
   roi:
     x: 0.0
     y: 0.0
@@ -49,9 +54,9 @@ calibration:
 prizes:
   track_stock: true
   stock:
-    Candy + Stickers: 20
-    OG Terpscoop: 10
-    Lighter Case: 0
-    XL Terpscoop: 1
-    Terpz T-Shirt: 5
+    Candy + Stickers: 49
+    OG Terpscoop: 76
+    Lighter Case: 40
+    XL Terpscoop: 0
+    Terpz T-Shirt: 20
   grand_prize: 1
