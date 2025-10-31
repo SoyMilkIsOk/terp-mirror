@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import math
 import time
 from dataclasses import dataclass, replace
@@ -47,6 +48,9 @@ _FONT_CANDIDATES: Sequence[str] = (
     "Party LET",
     "Papyrus",
 )
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class MirrorConfigError(RuntimeError):
@@ -465,6 +469,64 @@ class ResultOverlay:
         self.prize_font = _load_spooky_font(60)
         self.text_color = HALLOWEEN_RED
         self.border_color = HALLOWEEN_RED
+        self._image_dir = Path(__file__).resolve().parent / "pics"
+        self._image_keys: dict[str, pygame.Surface] = {}
+        self._keyword_lookup: Sequence[tuple[str, str]] = (
+            (GRAND_PRIZE_NAME.lower(), "bong"),
+            ("grand", "bong"),
+            ("bong", "bong"),
+            ("shirt", "shirt"),
+            ("lighter", "lighters"),
+            ("candy", "candy"),
+            ("scoop", "2pk"),
+            ("2pk", "2pk"),
+        )
+        self._load_prize_images()
+
+    def _load_prize_images(self) -> None:
+        """Load prize artwork assets bundled with the app."""
+
+        asset_files = {
+            "shirt": "shirt.png",
+            "lighters": "lighters.png",
+            "2pk": "2pk.png",
+            "bong": "bong.png",
+            "candy": "candy.png",
+        }
+        for key, filename in asset_files.items():
+            path = self._image_dir / filename
+            if not path.exists():
+                LOGGER.warning("Prize artwork missing: %s", path)
+                continue
+            try:
+                surface = pygame.image.load(str(path)).convert_alpha()
+            except pygame.error as exc:  # pragma: no cover - defensive
+                LOGGER.warning("Failed to load prize artwork %s: %s", path, exc)
+                continue
+            self._image_keys[key] = surface
+
+    def _lookup_image(self, prize_text: Optional[str]) -> Optional[pygame.Surface]:
+        if not prize_text:
+            return None
+        normalized = prize_text.lower()
+        for keyword, key in self._keyword_lookup:
+            if keyword in normalized:
+                return self._image_keys.get(key)
+        return None
+
+    @staticmethod
+    def _scale_image(
+        surface: pygame.Surface, max_width: int, max_height: int
+    ) -> pygame.Surface:
+        width, height = surface.get_size()
+        if width <= max_width and height <= max_height:
+            return surface
+        scale = min(max_width / max(1, width), max_height / max(1, height))
+        new_size = (
+            max(1, int(round(width * scale))),
+            max(1, int(round(height * scale))),
+        )
+        return pygame.transform.smoothscale(surface, new_size)
 
     def draw(self, target: pygame.Surface, prize_text: Optional[str], center: tuple[int, int]) -> None:
         overlay = pygame.Surface(target.get_size(), pygame.SRCALPHA)
@@ -473,19 +535,60 @@ class ResultOverlay:
         prize_message = prize_text if prize_text else "Mystery treat incoming!"
         body_surface = self.prize_font.render(prize_message, True, self.text_color)
 
-        title_rect = title_surface.get_rect()
-        body_rect = body_surface.get_rect()
-
         horizontal_padding = 48
         top_padding = 36
         bottom_padding = 48
-        line_spacing = 24
+        text_spacing = 24
+        image_spacing = 36
+        max_card_width = target.get_width() - 80
+        max_card_height = target.get_height() - 80
 
-        content_width = max(title_rect.width, body_rect.width)
-        content_height = title_rect.height + line_spacing + body_rect.height
+        image_surface = self._lookup_image(prize_text)
+        scaled_image: Optional[pygame.Surface] = None
+        if image_surface is not None:
+            max_image_width = max(180, int(target.get_width() * 0.35))
+            if max_card_width > 0:
+                inner_width_limit = max_card_width - horizontal_padding * 2
+                if inner_width_limit > 0:
+                    max_image_width = min(max_image_width, inner_width_limit)
+            max_image_height = max(160, int(target.get_height() * 0.35))
+            if max_card_height > 0:
+                height_budget = (
+                    max_card_height
+                    - (top_padding + bottom_padding + title_surface.get_height() + text_spacing + body_surface.get_height())
+                )
+                if height_budget > 0:
+                    max_image_height = min(max_image_height, height_budget)
+            scaled_image = self._scale_image(image_surface, max_image_width, max_image_height)
 
+        elements: list[tuple[str, pygame.Surface]] = [
+            ("text", title_surface),
+            ("text", body_surface),
+        ]
+        if scaled_image is not None:
+            elements.append(("image", scaled_image))
+
+        content_width = max(surface.get_width() for _, surface in elements)
+        content_height = sum(surface.get_height() for _, surface in elements)
+
+        for idx in range(len(elements) - 1):
+            next_kind = elements[idx + 1][0]
+            content_height += image_spacing if next_kind == "image" else text_spacing
+
+        if max_card_width > 0:
+            horizontal_padding = min(
+                horizontal_padding,
+                max(24, (max_card_width - content_width) // 2),
+            )
         card_width = content_width + horizontal_padding * 2
+
         card_height = content_height + top_padding + bottom_padding
+        if max_card_height > 0 and card_height > max_card_height:
+            available_padding = max_card_height - content_height
+            available_padding = max(40, available_padding)
+            top_padding = available_padding // 2
+            bottom_padding = max(32, available_padding - top_padding)
+            card_height = content_height + top_padding + bottom_padding
 
         card_rect = pygame.Rect(0, 0, card_width, card_height)
         card_rect.center = center
@@ -498,11 +601,17 @@ class ResultOverlay:
             border_radius=24,
         )
 
-        title_rect.midtop = (card_rect.centerx, card_rect.top + top_padding)
-        body_rect.midtop = (card_rect.centerx, title_rect.bottom + line_spacing)
+        cursor_y = card_rect.top + top_padding
+        for idx, (kind, surface) in enumerate(elements):
+            element_rect = surface.get_rect()
+            element_rect.centerx = card_rect.centerx
+            element_rect.top = cursor_y
+            overlay.blit(surface, element_rect)
 
-        overlay.blit(title_surface, title_rect)
-        overlay.blit(body_surface, body_rect)
+            cursor_y = element_rect.bottom
+            if idx < len(elements) - 1:
+                next_kind = elements[idx + 1][0]
+                cursor_y += image_spacing if next_kind == "image" else text_spacing
 
         target.blit(overlay, (0, 0))
 
