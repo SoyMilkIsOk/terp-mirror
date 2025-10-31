@@ -469,13 +469,26 @@ class ResultOverlay:
     def draw(self, target: pygame.Surface, prize_text: Optional[str], center: tuple[int, int]) -> None:
         overlay = pygame.Surface(target.get_size(), pygame.SRCALPHA)
 
-        card_width = int(target.get_width() * 0.5)
-        card_height = int(target.get_height() * 0.5)
+        title_surface = self.title_font.render("YOU WIN:", True, self.text_color)
+        prize_message = prize_text if prize_text else "Mystery treat incoming!"
+        body_surface = self.prize_font.render(prize_message, True, self.text_color)
+
+        title_rect = title_surface.get_rect()
+        body_rect = body_surface.get_rect()
+
+        horizontal_padding = 48
+        top_padding = 36
+        bottom_padding = 48
+        line_spacing = 24
+
+        content_width = max(title_rect.width, body_rect.width)
+        content_height = title_rect.height + line_spacing + body_rect.height
+
+        card_width = content_width + horizontal_padding * 2
+        card_height = content_height + top_padding + bottom_padding
+
         card_rect = pygame.Rect(0, 0, card_width, card_height)
         card_rect.center = center
-
-        # Keep the card within the screen bounds.
-        card_rect.clamp_ip(target.get_rect())
 
         pygame.draw.rect(
             overlay,
@@ -485,14 +498,8 @@ class ResultOverlay:
             border_radius=24,
         )
 
-        title_surface = self.title_font.render("YOU WIN:", True, self.text_color)
-        prize_message = prize_text if prize_text else "Mystery treat incoming!"
-        body_surface = self.prize_font.render(prize_message, True, self.text_color)
-
-        title_rect = title_surface.get_rect()
-        title_rect.midtop = (card_rect.centerx, card_rect.top + 32)
-        body_rect = body_surface.get_rect()
-        body_rect.midtop = (card_rect.centerx, title_rect.bottom + 24)
+        title_rect.midtop = (card_rect.centerx, card_rect.top + top_padding)
+        body_rect.midtop = (card_rect.centerx, title_rect.bottom + line_spacing)
 
         overlay.blit(title_surface, title_rect)
         overlay.blit(body_surface, body_rect)
