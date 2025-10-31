@@ -42,6 +42,9 @@ timers:
 * `target_fps` &mdash; Desired update rate for the projector display.
 * `timers.rolling` &mdash; Seconds spent animating the spinner before revealing a result.
 * `timers.result` &mdash; Seconds the placeholder prize card stays on screen.
+  The prize banner now shows a transparent, red "YOU WIN" frame in a festive
+  Chalkduster-style font so it pops on the Halloween projector without the
+  blinding white background.
 * `timers.cooldown` &mdash; Seconds to wait before returning to the idle camera feed.
 
 ## Running the mirror
@@ -93,7 +96,9 @@ fine-tune how strict the wave detector behaves without restarting the app:
   prompts read correctly.
 * **UI rotation** &mdash; Rotate the spinner, prompt, and prize overlays in 90°
   increments to match cameras that are mounted sideways. The camera feed remains
-  upright; only the pop-up UI elements rotate.
+  upright; only the pop-up UI elements rotate. Rotated overlays hug the same top
+  edge as the default layout so the prompt stays near the physical top of the
+  display after you pivot the projector.
 * **Min contour area** &mdash; Ignore blobs smaller than this number of pixels.
 * **Min circularity** &mdash; Reject candidates whose contour circularity
   (`4πA / P²`) falls below the threshold. Rounder hands or props score closer to

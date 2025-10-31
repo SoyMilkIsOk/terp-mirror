@@ -410,12 +410,29 @@ class ResultOverlay:
     """Placeholder prize/result card overlay."""
 
     def __init__(self) -> None:
-        self.title_font = pygame.font.Font(None, 96)
-        self.body_font = pygame.font.Font(None, 48)
+        self._font_candidates: Sequence[str] = (
+            "Chalkduster",
+            "Trattatello",
+            "Party LET",
+            "Papyrus",
+        )
+        self.title_font = self._load_festive_font(110)
+        self.prize_font = self._load_festive_font(72)
+        self.text_color = (215, 0, 0)
+        self.border_color = (215, 0, 0)
+
+    def _load_festive_font(self, size: int) -> pygame.font.Font:
+        for name in self._font_candidates:
+            try:
+                font = pygame.font.SysFont(name, size)
+            except Exception:  # pragma: no cover - defensive guard
+                continue
+            if font is not None:
+                return font
+        return pygame.font.Font(None, size)
 
     def draw(self, target: pygame.Surface, prize_text: Optional[str], center: tuple[int, int]) -> None:
         overlay = pygame.Surface(target.get_size(), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 160))
 
         card_width = int(target.get_width() * 0.5)
         card_height = int(target.get_height() * 0.35)
@@ -425,15 +442,22 @@ class ResultOverlay:
         # Keep the card within the screen bounds.
         card_rect.clamp_ip(target.get_rect())
 
-        pygame.draw.rect(overlay, (255, 255, 255, 235), card_rect, border_radius=20)
-        pygame.draw.rect(overlay, (128, 0, 128, 255), card_rect, width=6, border_radius=20)
+        pygame.draw.rect(
+            overlay,
+            self.border_color,
+            card_rect,
+            width=8,
+            border_radius=24,
+        )
 
-        title_surface = self.title_font.render("Spin Complete!", True, (40, 0, 70))
-        prize_message = f"Prize: {prize_text}" if prize_text else "Your prize awaits..."
-        body_surface = self.body_font.render(prize_message, True, (40, 0, 70))
+        title_surface = self.title_font.render("YOU WIN:", True, self.text_color)
+        prize_message = prize_text if prize_text else "Mystery treat incoming!"
+        body_surface = self.prize_font.render(prize_message, True, self.text_color)
 
-        title_rect = title_surface.get_rect(center=(card_rect.centerx, card_rect.centery - 40))
-        body_rect = body_surface.get_rect(center=(card_rect.centerx, card_rect.centery + 40))
+        title_rect = title_surface.get_rect()
+        title_rect.midtop = (card_rect.centerx, card_rect.top + 32)
+        body_rect = body_surface.get_rect()
+        body_rect.midtop = (card_rect.centerx, title_rect.bottom + 24)
 
         overlay.blit(title_surface, title_rect)
         overlay.blit(body_surface, body_rect)
@@ -1646,8 +1670,17 @@ def _render_phase(
 
     if overlay_target is not target:
         rotated_overlay = _rotate_ui_surface(overlay_target, ui_rotation_deg)
-        rect = rotated_overlay.get_rect(center=target.get_rect().center)
-        target.blit(rotated_overlay, rect)
+        target_rect = target.get_rect()
+        rotated_rect = rotated_overlay.get_rect(center=target_rect.center)
+
+        content_rect = overlay_target.get_bounding_rect()
+        rotated_content_rect = rotated_overlay.get_bounding_rect()
+        if rotated_content_rect.width and rotated_content_rect.height:
+            offset_x = content_rect.left - (rotated_rect.left + rotated_content_rect.left)
+            offset_y = content_rect.top - (rotated_rect.top + rotated_content_rect.top)
+            rotated_rect.move_ip(offset_x, offset_y)
+
+        target.blit(rotated_overlay, rotated_rect)
 
 
 def _draw_picture_in_picture(
