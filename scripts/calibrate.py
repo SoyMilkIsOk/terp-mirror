@@ -222,9 +222,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     screen_size = _resolve_display_size(monitor_index)
     output_path = _resolve_output_path(config, args.output)
 
-    cap = cv2.VideoCapture(config.camera_index)
+    cap = cv2.VideoCapture(config.display_camera_index)
     if not cap.isOpened():
-        raise SystemExit(f"Unable to open camera index {config.camera_index}.")
+        raise SystemExit(f"Unable to open camera index {config.display_camera_index}.")
 
     pygame.init()
     flags = 0 if args.windowed else pygame.FULLSCREEN

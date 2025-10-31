@@ -7,7 +7,7 @@ import math
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 try:
     import cv2
@@ -18,6 +18,11 @@ except ModuleNotFoundError as exc:  # pragma: no cover - import guard
     ) from exc
 import pygame
 import yaml
+
+try:
+    from pygame._sdl2.video import Renderer, Texture, Window
+except (ImportError, AttributeError):  # pragma: no cover - optional dependency guard
+    Renderer = Texture = Window = None  # type: ignore[assignment]
 
 from .detection import DetectionConfig, DetectionROI, DetectionResult, WaveDetector
 from .calibration import (
@@ -43,9 +48,11 @@ class MirrorConfig:
     """Normalized mirror configuration values."""
 
     monitor_index: int
+    control_monitor_index: int
     rotate_deg: int
     mirror: bool
-    camera_index: int
+    tracking_camera_index: int
+    display_camera_index: int
     target_fps: int
     roll_duration: float
     result_duration: float
@@ -75,8 +82,21 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         raise MirrorConfigError(f"Missing configuration keys: {', '.join(sorted(missing))}")
 
     camera_cfg = data.get("camera")
-    if not isinstance(camera_cfg, dict) or "index" not in camera_cfg:
-        raise MirrorConfigError("Camera configuration must include an 'index'.")
+    if not isinstance(camera_cfg, dict):
+        raise MirrorConfigError("Camera configuration must be a mapping.")
+
+    base_camera_index = camera_cfg.get("index")
+    tracking_camera_raw = camera_cfg.get("tracking_index", base_camera_index)
+    display_camera_raw = camera_cfg.get("display_index", base_camera_index)
+    if tracking_camera_raw is None or display_camera_raw is None:
+        raise MirrorConfigError(
+            "Camera configuration must include either 'index' or both 'tracking_index' and 'display_index'."
+        )
+    try:
+        tracking_camera_index = int(tracking_camera_raw)
+        display_camera_index = int(display_camera_raw)
+    except (TypeError, ValueError) as exc:
+        raise MirrorConfigError("Camera indexes must be integers.") from exc
 
     rotate_deg = int(data["rotate_deg"])
     if rotate_deg not in {0, 90, -90, 180, -180}:
@@ -103,9 +123,11 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
 
     return MirrorConfig(
         monitor_index=int(data["monitor_index"]),
+        control_monitor_index=int(data.get("control_monitor_index", data["monitor_index"])),
         rotate_deg=rotate_deg,
         mirror=bool(data["mirror"]),
-        camera_index=int(camera_cfg["index"]),
+        tracking_camera_index=tracking_camera_index,
+        display_camera_index=display_camera_index,
         target_fps=max(1, int(data["target_fps"])),
         roll_duration=roll_duration,
         result_duration=result_duration,
@@ -329,6 +351,7 @@ class RuntimeToggles:
 
     diagnostics_visible: bool = False
     controls_visible: bool = True
+    dual_camera_preview: bool = False
 
 
 @dataclass
@@ -1120,9 +1143,10 @@ class ControlPanel:
     def _build_config_payload(self) -> dict:
         data: dict[str, object] = {
             "monitor_index": self._base_config.monitor_index,
+            "control_monitor_index": self._base_config.control_monitor_index,
             "rotate_deg": self._base_config.rotate_deg,
             "mirror": bool(self.settings.mirror_enabled),
-            "camera": {"index": self._base_config.camera_index},
+            "camera": self._build_camera_payload(),
             "target_fps": int(self.settings.target_fps),
             "dry_run": bool(self._base_config.dry_run),
             "timers": {
@@ -1194,6 +1218,17 @@ class ControlPanel:
 
         return data
 
+    def _build_camera_payload(self) -> dict[str, int]:
+        tracking_index = int(self._base_config.tracking_camera_index)
+        display_index = int(self._base_config.display_camera_index)
+        payload = {
+            "tracking_index": tracking_index,
+            "display_index": display_index,
+        }
+        if tracking_index == display_index:
+            payload["index"] = tracking_index
+        return payload
+
 
 class CameraManager:
     """Robust wrapper around ``cv2.VideoCapture`` with retry support."""
@@ -1264,20 +1299,62 @@ class CameraStatusOverlay:
     def __init__(self) -> None:
         self.font = pygame.font.Font(None, 32)
 
-    def draw(self, target: pygame.Surface, message: str) -> None:
-        if not message:
+    def draw(self, target: pygame.Surface, messages: Sequence[str] | str) -> None:
+        if isinstance(messages, str):
+            lines = [messages]
+        else:
+            lines = list(messages)
+
+        filtered = [line for line in lines if line and line.lower() != "connected"]
+        if not filtered:
             return
 
-        text_surface = self.font.render(message, True, (255, 200, 200))
-        padding = 14
-        background = pygame.Surface(
-            (text_surface.get_width() + padding * 2, text_surface.get_height() + padding),
-            pygame.SRCALPHA,
-        )
+        surfaces = [self.font.render(line, True, (255, 200, 200)) for line in filtered]
+        padding_x = 18
+        padding_y = 12
+        width = max(surface.get_width() for surface in surfaces) + padding_x * 2
+        height = sum(surface.get_height() for surface in surfaces) + padding_y * 2
+
+        background = pygame.Surface((width, height), pygame.SRCALPHA)
         background.fill((120, 0, 0, 180))
-        rect = background.get_rect(center=(target.get_width() // 2, 40))
+        rect = background.get_rect(center=(target.get_width() // 2, 50))
         target.blit(background, rect)
-        target.blit(text_surface, text_surface.get_rect(center=rect.center))
+
+        y = rect.top + padding_y
+        for surface in surfaces:
+            surface_rect = surface.get_rect(centerx=rect.centerx, top=y)
+            target.blit(surface, surface_rect)
+            y = surface_rect.bottom
+
+
+class ControlDisplay:
+    """Handle the operator-facing window rendered with SDL2."""
+
+    def __init__(self, size: tuple[int, int], *, title: str = "Terp Mirror Controls") -> None:
+        if Window is None or Renderer is None or Texture is None:
+            raise MirrorConfigError(
+                "pygame._sdl2 is required for the dual-display layout. Please upgrade pygame to 2.0+"
+            )
+        self.window = Window(title, size=size, fullscreen_desktop=True)
+        self.renderer = Renderer(self.window)
+        self.texture: Optional[Texture] = None
+        self.window.focus()
+
+    def present(self, surface: pygame.Surface) -> None:
+        if self.texture is None or (self.texture.width, self.texture.height) != surface.get_size():
+            self.texture = Texture.from_surface(self.renderer, surface)
+        else:
+            self.texture.update(surface)
+        self.renderer.clear()
+        self.renderer.blit(self.texture)
+        self.renderer.present()
+
+    def close(self) -> None:
+        self.texture = None
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
+        self.renderer = None
 
 
 def _capture_phase(
@@ -1394,6 +1471,11 @@ def _update_phase(
         elif event.key == pygame.K_RIGHT:
             multiplier = 5 if event.mod & pygame.KMOD_SHIFT else 1
             control_panel.adjust_selection(1, multiplier)
+            handled = True
+        elif event.key == pygame.K_F5:
+            toggles.dual_camera_preview = not toggles.dual_camera_preview
+            state = "enabled" if toggles.dual_camera_preview else "disabled"
+            print(f"[mirror] Dual camera preview {state}.")
             handled = True
         elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
             handled = control_panel.activate_selection()
@@ -1513,6 +1595,32 @@ def _render_phase(
             diagnostics_overlay.draw(target, diagnostics_data)
 
 
+def _draw_picture_in_picture(
+    target: pygame.Surface,
+    inset_surface: pygame.Surface,
+    *,
+    width_ratio: float = 0.28,
+    margin: int = 24,
+) -> None:
+    """Render a secondary camera feed as a picture-in-picture overlay."""
+
+    if width_ratio <= 0:
+        return
+
+    inset_width = max(1, int(target.get_width() * width_ratio))
+    aspect = inset_surface.get_width() / max(1, inset_surface.get_height())
+    inset_height = max(1, int(inset_width / aspect))
+
+    scaled = pygame.transform.smoothscale(inset_surface, (inset_width, inset_height))
+    background = pygame.Surface((inset_width + margin, inset_height + margin), pygame.SRCALPHA)
+    background.fill((20, 20, 20, 200))
+
+    rect = background.get_rect()
+    rect.topright = (target.get_width() - margin, margin)
+    target.blit(background, rect)
+    target.blit(scaled, scaled.get_rect(center=rect.center))
+
+
 def run_mirror(
     config: MirrorConfig,
     monitor_override: Optional[int] = None,
@@ -1522,14 +1630,16 @@ def run_mirror(
     """Run the mirror display loop using the supplied configuration."""
 
     monitor_index = monitor_override if monitor_override is not None else config.monitor_index
-    camera_index = config.camera_index
+    control_monitor_index = config.control_monitor_index
     dry_run = config.dry_run
 
     pygame.init()
     pygame.display.set_caption("Terp Mirror")
     pygame.mouse.set_visible(False)
     screen_size = _resolve_display_size(monitor_index)
+    control_size = _resolve_display_size(control_monitor_index)
     screen = pygame.display.set_mode(screen_size, pygame.FULLSCREEN, display=monitor_index)
+    control_display = ControlDisplay(control_size)
     clock = pygame.time.Clock()
 
     state_machine = MirrorStateMachine(
@@ -1561,8 +1671,10 @@ def run_mirror(
     camera_overlay = CameraStatusOverlay()
     prize_overlay = PrizeStatusOverlay()
     toggles = RuntimeToggles()
-    camera_manager = CameraManager(camera_index, enabled=not dry_run)
+    tracking_camera_manager = CameraManager(config.tracking_camera_index, enabled=not dry_run)
+    display_camera_manager = CameraManager(config.display_camera_index, enabled=not dry_run)
     composite_surface = pygame.Surface(screen_size)
+    control_surface = pygame.Surface(control_size)
 
     calibration_mapping: Optional[CalibrationMapping] = None
     calibration_warning_emitted = False
@@ -1577,9 +1689,11 @@ def run_mirror(
             calibration_mapping = None
             calibration_warning_emitted = True
 
-    last_frame: Optional[pygame.Surface] = None
+    last_tracking_frame: Optional[pygame.Surface] = None
+    last_display_frame: Optional[pygame.Surface] = None
     last_detection: Optional[DetectionResult] = None
-    last_frame_size: Optional[tuple[int, int]] = None
+    last_tracking_frame_size: Optional[tuple[int, int]] = None
+    last_display_frame_size: Optional[tuple[int, int]] = None
     active_calibration: Optional[CalibrationMapping] = None
     last_trigger_latency: Optional[float] = None
     last_wave_trigger: Optional[float] = None
@@ -1592,18 +1706,26 @@ def run_mirror(
                 events, state_machine, detector, prize_manager, control_panel, toggles
             )
 
-            frame_surface, detection_result, frame_size = _capture_phase(
-                camera_manager, config, screen_size, detector
+            tracking_frame, detection_result, tracking_size = _capture_phase(
+                tracking_camera_manager, config, control_size, detector
             )
-            if frame_surface is not None:
-                if settings.mirror_enabled:
-                    frame_surface = pygame.transform.flip(frame_surface, True, False)
-                last_frame = frame_surface
+            if tracking_frame is not None:
+                last_tracking_frame = tracking_frame
             last_detection = detection_result
-            if frame_size is not None:
-                last_frame_size = frame_size
+            if tracking_size is not None:
+                last_tracking_frame_size = tracking_size
+
+            display_frame, _, display_size = _capture_phase(
+                display_camera_manager, config, screen_size, None
+            )
+            if display_frame is not None:
+                if settings.mirror_enabled:
+                    display_frame = pygame.transform.flip(display_frame, True, False)
+                last_display_frame = display_frame
+            if display_size is not None:
+                last_display_frame_size = display_size
                 if calibration_mapping is not None and active_calibration is None:
-                    if calibration_mapping.is_compatible(last_frame_size, screen_size):
+                    if calibration_mapping.is_compatible(last_display_frame_size, screen_size):
                         active_calibration = calibration_mapping
                     elif not calibration_warning_emitted:
                         print(
@@ -1632,7 +1754,8 @@ def run_mirror(
                 )
                 last_wave_trigger = None
 
-            camera_status = camera_manager.status_text()
+            tracking_status = tracking_camera_manager.status_text()
+            display_status = display_camera_manager.status_text()
             diagnostics_data: Optional[DiagnosticsData] = None
             if toggles.diagnostics_visible:
                 diagnostics_data = DiagnosticsData(
@@ -1641,16 +1764,19 @@ def run_mirror(
                     state=state_machine.state,
                     detection_paused=detector.paused if detector is not None else False,
                     last_trigger_latency=last_trigger_latency,
-                    camera_status=camera_status,
+                    camera_status=(
+                        f"Display: {display_status} | Tracking: {tracking_status}"
+                    ),
                 )
 
-            target_surface = composite_surface
-            if last_frame is None:
-                target_surface.fill((0, 0, 0))
+            control_camera_messages = [
+                f"Tracking camera: {tracking_status}",
+                f"Display camera: {display_status}",
+            ]
 
             _render_phase(
-                target_surface,
-                last_frame,
+                control_surface,
+                last_tracking_frame,
                 state_machine,
                 spinner,
                 result_overlay,
@@ -1662,10 +1788,45 @@ def run_mirror(
                 camera_overlay,
                 toggles,
                 last_detection,
-                last_frame_size,
+                last_tracking_frame_size,
                 active_calibration,
                 config.calibration,
-                camera_status,
+                control_camera_messages,
+                detector.paused if detector is not None else False,
+                False,
+            )
+
+            if toggles.dual_camera_preview and last_display_frame is not None:
+                _draw_picture_in_picture(control_surface, last_display_frame)
+
+            control_display.present(control_surface)
+
+            target_surface = composite_surface
+
+            projector_toggles = RuntimeToggles(
+                diagnostics_visible=False,
+                controls_visible=False,
+                dual_camera_preview=False,
+            )
+
+            _render_phase(
+                target_surface,
+                last_display_frame,
+                state_machine,
+                spinner,
+                result_overlay,
+                prompt_overlay,
+                diagnostics_overlay,
+                diagnostics_data,
+                prize_overlay,
+                control_panel,
+                camera_overlay,
+                projector_toggles,
+                None,
+                last_display_frame_size,
+                active_calibration,
+                config.calibration,
+                [f"Display camera: {display_status}"],
                 detector.paused if detector is not None else False,
                 settings.mirror_enabled,
             )
@@ -1681,7 +1842,9 @@ def run_mirror(
     finally:
         if control_panel.has_unsaved_changes:
             control_panel.save_config(auto=True)
-        camera_manager.close()
+        tracking_camera_manager.close()
+        display_camera_manager.close()
+        control_display.close()
         pygame.quit()
 
 
