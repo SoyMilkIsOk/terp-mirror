@@ -79,10 +79,15 @@ debug menus, and diagnostics. During operation you can use the following
 hotkeys while the control window is focused:
 
 * <kbd>R</kbd> &mdash; Trigger a prize roll and show the spinner animation.
-* <kbd>F</kbd> &mdash; Skip directly to the prize/result card.
+* <kbd>F</kbd> &mdash; Blank or restore the MacBook's tracking feed to cut visual
+  overhead while detection continues running.
+* <kbd>⌃ Ctrl</kbd> + <kbd>F</kbd> &mdash; Skip directly to the prize/result card.
+* <kbd>Q</kbd> &mdash; Queue the currently selected prize for the next roll without
+  triggering it early.
+* <kbd>⌃ Ctrl</kbd> + <kbd>G</kbd> &mdash; Force the next result to be the grand prize.
 * <kbd>F5</kbd> &mdash; Toggle a picture-in-picture preview of the audience camera on
   the control window (useful while aligning both lenses).
-* <kbd>Esc</kbd> / <kbd>Q</kbd> &mdash; Exit the application.
+* <kbd>Esc</kbd> / <kbd>⌃ Ctrl</kbd> + <kbd>Q</kbd> &mdash; Exit the application.
 * <kbd>⌥ Option</kbd> (or <kbd>Alt</kbd>) &mdash; Toggle the operator controls panel and prize inventory menu.
 
 ### Dual camera layout
@@ -93,6 +98,19 @@ sees the second camera (`camera.display_index`) along with the mirrored GUI on
 the projector. When you need to confirm both lenses are aimed at the same spot,
 press <kbd>F5</kbd> to enable a picture-in-picture preview of the audience camera
 inside the control window.
+
+## Prize catalog
+
+The default prize weights match the latest booth giveaway mix:
+
+* **Candy + Sticker** &mdash; 1 in 3 chance.
+* **Terp Scoop** &mdash; 1 in 3 chance.
+* **Lighter Case** &mdash; 1 in 5 chance.
+* **Bong Rip** &mdash; 1 in 8 chance.
+* **T-Shirt** &mdash; 1 in 30 chance.
+
+The grand prize is only awarded when the operator forces it via
+<kbd>⌃ Ctrl</kbd> + <kbd>G</kbd>.
 
 ## Controls panel (operator cheat-sheet)
 

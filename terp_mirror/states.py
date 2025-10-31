@@ -79,10 +79,6 @@ class MirrorStateMachine:
             self._pending_grand_prize = True
         else:
             self.prize_manager.queue_specific_prize(prize_name)
-        if self.state is MirrorState.IDLE:
-            self.trigger_roll()
-        else:
-            self.force_result()
 
     def update(self) -> None:
         """Update the state based on elapsed time."""

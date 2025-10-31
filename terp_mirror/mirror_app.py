@@ -429,6 +429,7 @@ class RuntimeToggles:
     diagnostics_visible: bool = False
     controls_visible: bool = True
     dual_camera_preview: bool = False
+    blackout_display: bool = False
 
 
 @dataclass
@@ -475,9 +476,11 @@ class ResultOverlay:
             (GRAND_PRIZE_NAME.lower(), "bong"),
             ("grand", "bong"),
             ("bong", "bong"),
+            ("rip", "bong"),
             ("shirt", "shirt"),
             ("lighter", "lighters"),
             ("candy", "candy"),
+            ("sticker", "candy"),
             ("scoop", "2pk"),
             ("2pk", "2pk"),
         )
@@ -720,7 +723,7 @@ class PrizeStatusOverlay:
             f"Selected: {selected}",
             f"Stock: {'∞' if stock is None else stock}",
             f"Queued: {queued or 'auto'}",
-            "Hotkeys: [ ] select | +/- stock | G queue",
+            "Hotkeys: [ ] select | +/- stock | Q queue | Ctrl+G grand",
         ]
 
         y = 14
@@ -1615,6 +1618,8 @@ def _capture_phase(
     config: MirrorConfig,
     screen_size: tuple[int, int],
     detector: Optional[WaveDetector],
+    *,
+    make_surface: bool = True,
 ) -> tuple[Optional[pygame.Surface], Optional[DetectionResult], Optional[tuple[int, int]]]:
     if camera is None:
         return None, None, None
@@ -1629,14 +1634,20 @@ def _capture_phase(
     if detector is not None:
         detection_result = detector.process_frame(frame)
 
+    frame_size = frame.shape[1], frame.shape[0]
+
+    if not make_surface:
+        return None, detection_result, frame_size
+
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame_size = frame_rgb.shape[1], frame_rgb.shape[0]
+    if frame_rgb.shape[1::-1] != screen_size:
+        width = screen_size[0]
+        interpolation = cv2.INTER_AREA if frame_rgb.shape[1] > width else cv2.INTER_LINEAR
+        frame_rgb = cv2.resize(frame_rgb, screen_size, interpolation=interpolation)
 
     frame_surface = pygame.image.frombuffer(
         frame_rgb.tobytes(), frame_rgb.shape[1::-1], "RGB"
     ).convert()
-    if frame_surface.get_size() != screen_size:
-        frame_surface = pygame.transform.smoothscale(frame_surface, screen_size)
     return frame_surface, detection_result, frame_size
 
 
@@ -1660,24 +1671,38 @@ def _update_phase(
             continue
 
         handled = False
-        if event.key in (pygame.K_ESCAPE, pygame.K_q):
+        if event.key == pygame.K_q and event.mod & pygame.KMOD_CTRL:
+            running = False
+            handled = True
+        elif event.key == pygame.K_ESCAPE:
             running = False
             handled = True
         elif event.key == pygame.K_r:
             state_machine.trigger_roll()
+            manual_triggered = True
+            handled = True
+        elif event.key == pygame.K_f and event.mod & pygame.KMOD_CTRL:
+            state_machine.force_result()
+            manual_triggered = True
             handled = True
         elif event.key == pygame.K_f:
-            state_machine.force_result()
+            toggles.blackout_display = not toggles.blackout_display
+            handled = True
+        elif event.key == pygame.K_q:
+            selection = prize_manager.queue_manual_selection()
+            if selection is not None:
+                state_machine.queue_manual_prize(selection)
+                print(f"[prizes] Queued manual prize: {selection}")
+            handled = True
+        elif event.key == pygame.K_g and event.mod & pygame.KMOD_CTRL:
+            state_machine.force_grand_prize()
+            manual_triggered = True
             handled = True
         elif event.key == pygame.K_g:
-            if event.mod & pygame.KMOD_CTRL:
-                state_machine.force_grand_prize()
-            else:
-                selection = prize_manager.queue_manual_selection()
-                if selection is not None:
-                    state_machine.queue_manual_prize(selection)
-                    print(f"[prizes] Queued manual prize: {selection}")
-                    manual_triggered = True
+            selection = prize_manager.queue_manual_selection()
+            if selection is not None:
+                state_machine.queue_manual_prize(selection)
+                print(f"[prizes] Queued manual prize: {selection}")
             handled = True
         elif event.key == pygame.K_p and detector is not None:
             detector.toggle_pause()
@@ -1764,6 +1789,10 @@ def _render_phase(
     prompt_offset: tuple[int, int],
     ui_rotation_deg: int,
 ) -> None:
+    if toggles.blackout_display:
+        target.fill((0, 0, 0))
+        return
+
     if frame_surface is not None:
         target.blit(frame_surface, (0, 0))
     else:
@@ -2027,7 +2056,11 @@ def run_mirror(
             )
 
             tracking_frame, detection_result, tracking_size = _capture_phase(
-                tracking_camera_manager, config, control_size, detector
+                tracking_camera_manager,
+                config,
+                control_size,
+                detector,
+                make_surface=not toggles.blackout_display,
             )
             if tracking_frame is not None:
                 last_tracking_frame = tracking_frame
