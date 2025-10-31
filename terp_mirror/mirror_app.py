@@ -1988,9 +1988,9 @@ def _render_phase(
     elif state_machine.state is MirrorState.IDLE:
         prompt_overlay.draw(
             prompt_layer,
-            "point here ^",
+            "POINT HERE ^",
             prompt_anchor_draw,
-            "cast a spell and see what your heart truly desires",
+            "cast a spell! (slower is better)",
         )
     elif state_machine.state is MirrorState.ROLLING:
         spinner.draw(
