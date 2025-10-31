@@ -38,6 +38,7 @@ from .states import MirrorState, MirrorStateMachine
 
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
+SOUNDS_DIR = Path(__file__).resolve().parent / "sounds"
 
 HALLOWEEN_RED = (215, 0, 0)
 PROMPT_OFFSET_LIMIT = 1500
@@ -665,6 +666,75 @@ class PromptOverlay:
             body_rect = body_surface.get_rect(center=center)
             body_rect.y = title_rect.bottom + 8
             target.blit(body_surface, body_rect)
+
+
+class SoundEffects:
+    """Load and play short sound cues for key mirror events."""
+
+    def __init__(self, base_path: Path) -> None:
+        self._sounds: dict[str, "pygame.mixer.Sound"] = {}
+        self._enabled = False
+
+        if pygame.mixer.get_init() is None:
+            try:
+                pygame.mixer.init()
+            except pygame.error as exc:  # pragma: no cover - hardware dependent
+                LOGGER.warning("Unable to initialize audio playback: %s", exc)
+                return
+
+        self._enabled = True
+
+        sound_map = {
+            "wand": "wand.wav",
+            "roll": "roll.wav",
+            "prize": "prize.wav",
+            "grand": "grand.wav",
+        }
+
+        for key, filename in sound_map.items():
+            path = base_path / filename
+            if not path.exists():
+                LOGGER.warning("Sound effect missing: %s", path)
+                continue
+            try:
+                self._sounds[key] = pygame.mixer.Sound(str(path))
+            except pygame.error as exc:  # pragma: no cover - hardware dependent
+                LOGGER.warning("Unable to load sound '%s': %s", path, exc)
+
+    def _play(self, key: str) -> None:
+        if not self._enabled:
+            return
+        sound = self._sounds.get(key)
+        if sound is not None:
+            sound.play()
+
+    def play_wand(self) -> None:
+        self._play("wand")
+
+    def play_roll(self) -> None:
+        self._play("roll")
+
+    def play_prize(self) -> None:
+        self._play("prize")
+
+    def play_grand(self) -> None:
+        self._play("grand")
+
+    def handle_state_change(
+        self,
+        previous: MirrorState,
+        current: MirrorState,
+        prize_name: Optional[str],
+    ) -> None:
+        if not self._enabled:
+            return
+        if current is MirrorState.ROLLING and previous is not MirrorState.ROLLING:
+            self.play_roll()
+        elif current is MirrorState.RESULT and previous is not MirrorState.RESULT:
+            if prize_name == GRAND_PRIZE_NAME:
+                self.play_grand()
+            elif prize_name:
+                self.play_prize()
 
 
 class DiagnosticsOverlay:
@@ -1918,9 +1988,9 @@ def _render_phase(
     elif state_machine.state is MirrorState.IDLE:
         prompt_overlay.draw(
             prompt_layer,
-            "Cast a Spell",
+            "point here ^",
             prompt_anchor_draw,
-            "Use the Terpwand",
+            "cast a spell and see what your heart truly desires",
         )
     elif state_machine.state is MirrorState.ROLLING:
         spinner.draw(
@@ -2059,6 +2129,7 @@ def run_mirror(
     spinner = SpinnerOverlay()
     result_overlay = ResultOverlay()
     prompt_overlay = PromptOverlay()
+    sound_effects = SoundEffects(SOUNDS_DIR)
     diagnostics_overlay = DiagnosticsOverlay()
     camera_overlay = CameraStatusOverlay()
     prize_overlay = PrizeStatusOverlay()
@@ -2089,6 +2160,7 @@ def run_mirror(
     active_calibration: Optional[CalibrationMapping] = None
     last_trigger_latency: Optional[float] = None
     last_wave_trigger: Optional[float] = None
+    last_state = state_machine.state
 
     try:
         running = True
@@ -2097,6 +2169,12 @@ def run_mirror(
             running, manual_triggered = _update_phase(
                 events, state_machine, detector, prize_manager, control_panel, toggles
             )
+
+            if state_machine.state is not last_state:
+                sound_effects.handle_state_change(
+                    last_state, state_machine.state, state_machine.current_prize
+                )
+                last_state = state_machine.state
 
             tracking_frame, detection_result, tracking_size = _capture_phase(
                 tracking_camera_manager,
@@ -2142,6 +2220,8 @@ def run_mirror(
                 and not detector.paused
             ):
                 last_wave_trigger = time.monotonic()
+                sound_effects.play_wand()
+                state_before_trigger = state_machine.state
                 state_machine.trigger_roll()
                 last_trigger_latency = (
                     state_machine.last_trigger_timestamp - last_wave_trigger
@@ -2149,6 +2229,13 @@ def run_mirror(
                     else None
                 )
                 last_wave_trigger = None
+                if state_machine.state is not state_before_trigger:
+                    sound_effects.handle_state_change(
+                        state_before_trigger,
+                        state_machine.state,
+                        state_machine.current_prize,
+                    )
+                    last_state = state_machine.state
 
             tracking_status = tracking_camera_manager.status_text()
             display_status = display_camera_manager.status_text()
