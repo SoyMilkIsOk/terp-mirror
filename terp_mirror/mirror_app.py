@@ -38,6 +38,15 @@ from .states import MirrorState, MirrorStateMachine
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 
+HALLOWEEN_RED = (215, 0, 0)
+_FONT_CANDIDATES: Sequence[str] = (
+    "MyFont-v2",
+    "Chalkduster",
+    "Trattatello",
+    "Party LET",
+    "Papyrus",
+)
+
 
 class MirrorConfigError(RuntimeError):
     """Raised when the mirror configuration is invalid."""
@@ -51,6 +60,8 @@ class MirrorConfig:
     control_monitor_index: int
     rotate_deg: int
     ui_rotate_deg: int
+    prompt_offset: tuple[int, int]
+    result_offset: tuple[int, int]
     mirror: bool
     tracking_camera_index: int
     display_camera_index: int
@@ -62,6 +73,30 @@ class MirrorConfig:
     calibration: CalibrationConfig
     prizes: PrizeStockConfig
     dry_run: bool = False
+
+
+def _parse_offset_entry(value, name: str) -> tuple[int, int]:
+    if value is None:
+        return (0, 0)
+    if not isinstance(value, dict):
+        raise MirrorConfigError(f"{name} must be a mapping with 'x' and 'y' keys.")
+    try:
+        x = int(value.get("x", 0))
+        y = int(value.get("y", 0))
+    except (TypeError, ValueError) as exc:
+        raise MirrorConfigError(f"{name}.x and {name}.y must be integers.") from exc
+    return (x, y)
+
+
+def _load_spooky_font(size: int) -> pygame.font.Font:
+    for name in _FONT_CANDIDATES:
+        try:
+            font = pygame.font.SysFont(name, size)
+        except Exception:
+            continue
+        if font is not None:
+            return font
+    return pygame.font.Font(None, size)
 
 
 def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
@@ -111,6 +146,19 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
     if ui_rotate_deg not in {0, 90, -90, 180, -180}:
         raise MirrorConfigError("ui_rotate_deg must be one of {0, 90, -90, 180, -180}.")
 
+    prompt_offset = (0, 0)
+    result_offset = (0, 0)
+    ui_offsets_cfg = data.get("ui_offsets")
+    if ui_offsets_cfg is not None:
+        if not isinstance(ui_offsets_cfg, dict):
+            raise MirrorConfigError("ui_offsets must be a mapping with 'prompt' and 'result' entries.")
+        prompt_offset = _parse_offset_entry(ui_offsets_cfg.get("prompt"), "ui_offsets.prompt")
+        result_offset = _parse_offset_entry(ui_offsets_cfg.get("result"), "ui_offsets.result")
+    if "prompt_offset" in data:
+        prompt_offset = _parse_offset_entry(data.get("prompt_offset"), "prompt_offset")
+    if "result_offset" in data:
+        result_offset = _parse_offset_entry(data.get("result_offset"), "result_offset")
+
     timers_cfg = data.get("timers", {})
     try:
         roll_duration = float(timers_cfg.get("rolling", 3.0))
@@ -135,6 +183,8 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         control_monitor_index=int(data.get("control_monitor_index", data["monitor_index"])),
         rotate_deg=rotate_deg,
         ui_rotate_deg=ui_rotate_deg,
+        prompt_offset=prompt_offset,
+        result_offset=result_offset,
         mirror=bool(data["mirror"]),
         tracking_camera_index=tracking_camera_index,
         display_camera_index=display_camera_index,
@@ -365,6 +415,10 @@ class RuntimeSettings:
     target_fps: int
     mirror_enabled: bool
     ui_rotation_deg: int
+    prompt_offset_x: int
+    prompt_offset_y: int
+    result_offset_x: int
+    result_offset_y: int
 
 
 @dataclass
@@ -402,7 +456,7 @@ class SpinnerOverlay:
         arc_rect = rect.inflate(-self.stroke, -self.stroke)
         start_angle = angle % (2 * math.pi)
         end_angle = start_angle + math.pi * 1.5
-        pygame.draw.arc(overlay, (255, 215, 0), arc_rect, start_angle, end_angle, self.stroke)
+        pygame.draw.arc(overlay, HALLOWEEN_RED, arc_rect, start_angle, end_angle, self.stroke)
         target.blit(overlay, overlay.get_rect(center=center))
 
 
@@ -410,26 +464,10 @@ class ResultOverlay:
     """Placeholder prize/result card overlay."""
 
     def __init__(self) -> None:
-        self._font_candidates: Sequence[str] = (
-            "Chalkduster",
-            "Trattatello",
-            "Party LET",
-            "Papyrus",
-        )
-        self.title_font = self._load_festive_font(110)
-        self.prize_font = self._load_festive_font(72)
-        self.text_color = (215, 0, 0)
-        self.border_color = (215, 0, 0)
-
-    def _load_festive_font(self, size: int) -> pygame.font.Font:
-        for name in self._font_candidates:
-            try:
-                font = pygame.font.SysFont(name, size)
-            except Exception:  # pragma: no cover - defensive guard
-                continue
-            if font is not None:
-                return font
-        return pygame.font.Font(None, size)
+        self.title_font = _load_spooky_font(110)
+        self.prize_font = _load_spooky_font(72)
+        self.text_color = HALLOWEEN_RED
+        self.border_color = HALLOWEEN_RED
 
     def draw(self, target: pygame.Surface, prize_text: Optional[str], center: tuple[int, int]) -> None:
         overlay = pygame.Surface(target.get_size(), pygame.SRCALPHA)
@@ -469,8 +507,10 @@ class PromptOverlay:
     """Display guidance text positioned using calibration data."""
 
     def __init__(self) -> None:
-        self.title_font = pygame.font.Font(None, 72)
-        self.body_font = pygame.font.Font(None, 48)
+        self.title_font = _load_spooky_font(96)
+        self.body_font = _load_spooky_font(56)
+        self.text_color = HALLOWEEN_RED
+        self.subtext_color = HALLOWEEN_RED
 
     def draw(
         self,
@@ -478,18 +518,23 @@ class PromptOverlay:
         message: str,
         center: tuple[int, int],
         subtext: Optional[str] = None,
+        *,
+        color: Optional[tuple[int, int, int]] = None,
+        subtext_color: Optional[tuple[int, int, int]] = None,
     ) -> None:
         if not message:
             return
 
-        title_surface = self.title_font.render(message, True, (255, 255, 255))
+        title_color = color or self.text_color
+        title_surface = self.title_font.render(message, True, title_color)
         title_rect = title_surface.get_rect(center=center)
         title_rect.y -= title_surface.get_height()
 
         target.blit(title_surface, title_rect)
 
         if subtext:
-            body_surface = self.body_font.render(subtext, True, (255, 215, 0))
+            body_color = subtext_color or self.subtext_color
+            body_surface = self.body_font.render(subtext, True, body_color)
             body_rect = body_surface.get_rect(center=center)
             body_rect.y = title_rect.bottom + 8
             target.blit(body_surface, body_rect)
@@ -723,6 +768,54 @@ class ControlPanel:
                         % len(steps)
                     ]
                 ),
+            ),
+            ControlItem(
+                "Wave text X offset",
+                getter=lambda settings=self.settings: settings.prompt_offset_x,
+                setter=lambda value, settings=self.settings: setattr(
+                    settings, "prompt_offset_x", int(round(value))
+                ),
+                step=5,
+                fmt="{:d}px",
+                minimum=-2000,
+                maximum=2000,
+                coerce=lambda value: int(round(value)),
+            ),
+            ControlItem(
+                "Wave text Y offset",
+                getter=lambda settings=self.settings: settings.prompt_offset_y,
+                setter=lambda value, settings=self.settings: setattr(
+                    settings, "prompt_offset_y", int(round(value))
+                ),
+                step=5,
+                fmt="{:d}px",
+                minimum=-2000,
+                maximum=2000,
+                coerce=lambda value: int(round(value)),
+            ),
+            ControlItem(
+                "Prize text X offset",
+                getter=lambda settings=self.settings: settings.result_offset_x,
+                setter=lambda value, settings=self.settings: setattr(
+                    settings, "result_offset_x", int(round(value))
+                ),
+                step=5,
+                fmt="{:d}px",
+                minimum=-2000,
+                maximum=2000,
+                coerce=lambda value: int(round(value)),
+            ),
+            ControlItem(
+                "Prize text Y offset",
+                getter=lambda settings=self.settings: settings.result_offset_y,
+                setter=lambda value, settings=self.settings: setattr(
+                    settings, "result_offset_y", int(round(value))
+                ),
+                step=5,
+                fmt="{:d}px",
+                minimum=-2000,
+                maximum=2000,
+                coerce=lambda value: int(round(value)),
             ),
             ControlItem(
                 "Target FPS",
@@ -1210,6 +1303,16 @@ class ControlPanel:
             "control_monitor_index": self._base_config.control_monitor_index,
             "rotate_deg": self._base_config.rotate_deg,
             "ui_rotate_deg": int(self.settings.ui_rotation_deg),
+            "ui_offsets": {
+                "prompt": {
+                    "x": int(self.settings.prompt_offset_x),
+                    "y": int(self.settings.prompt_offset_y),
+                },
+                "result": {
+                    "x": int(self.settings.result_offset_x),
+                    "y": int(self.settings.result_offset_y),
+                },
+            },
             "mirror": bool(self.settings.mirror_enabled),
             "camera": self._build_camera_payload(),
             "target_fps": int(self.settings.target_fps),
@@ -1573,6 +1676,8 @@ def _render_phase(
     camera_status: Sequence[str] | str,
     detection_paused: bool,
     mirror_enabled: bool,
+    prompt_offset: tuple[int, int],
+    result_offset: tuple[int, int],
     ui_rotation_deg: int,
 ) -> None:
     if frame_surface is not None:
@@ -1608,8 +1713,8 @@ def _render_phase(
         calibrated_spinner_anchor = (center_x, center_y)
         calibrated_result_anchor = (center_x, center_y)
 
-        prompt_offset = max(80, int(round(bbox_height * 0.35)))
-        prompt_y = max(40, min(screen_size[1] - 40, int(round(min_y - prompt_offset))))
+        prompt_margin = max(80, int(round(bbox_height * 0.35)))
+        prompt_y = max(40, min(screen_size[1] - 40, int(round(min_y - prompt_margin))))
         calibrated_prompt_anchor = (center_x, prompt_y)
 
     def _pick_anchor(use_calibration: bool, calibrated: tuple[int, int], fallback: tuple[int, int]) -> tuple[int, int]:
@@ -1625,15 +1730,29 @@ def _render_phase(
         calibration_config.apply_result, calibrated_result_anchor, default_result_anchor
     )
 
+    def _apply_offset(anchor: tuple[int, int], offset: tuple[int, int]) -> tuple[int, int]:
+        return (int(anchor[0] + offset[0]), int(anchor[1] + offset[1]))
+
+    prompt_anchor = _apply_offset(prompt_anchor, prompt_offset)
+    result_anchor = _apply_offset(result_anchor, result_offset)
+
     overlay_target = target if ui_rotation_deg == 0 else pygame.Surface(target.get_size(), pygame.SRCALPHA)
 
     if detection_paused:
         prompt_overlay.draw(
-            overlay_target, "Detection paused", prompt_anchor, "Press P to resume"
+            overlay_target,
+            "Detection paused",
+            prompt_anchor,
+            "Press P to resume",
+            color=(255, 255, 255),
+            subtext_color=(255, 215, 0),
         )
     elif state_machine.state is MirrorState.IDLE:
         prompt_overlay.draw(
-            overlay_target, "Wave to roll", prompt_anchor, "Raise your hand to start"
+            overlay_target,
+            "Cast a Spell",
+            prompt_anchor,
+            "Use the Terpwand",
         )
     elif state_machine.state is MirrorState.ROLLING:
         spinner.draw(
@@ -1743,6 +1862,10 @@ def run_mirror(
         target_fps=config.target_fps,
         mirror_enabled=config.mirror,
         ui_rotation_deg=config.ui_rotate_deg,
+        prompt_offset_x=int(config.prompt_offset[0]),
+        prompt_offset_y=int(config.prompt_offset[1]),
+        result_offset_x=int(config.result_offset[0]),
+        result_offset_y=int(config.result_offset[1]),
     )
     control_panel = ControlPanel(
         settings,
@@ -1883,6 +2006,8 @@ def run_mirror(
                 control_camera_messages,
                 detector.paused if detector is not None else False,
                 False,
+                (settings.prompt_offset_x, settings.prompt_offset_y),
+                (settings.result_offset_x, settings.result_offset_y),
                 0,
             )
 
@@ -1919,6 +2044,8 @@ def run_mirror(
                 [f"Display camera: {display_status}"],
                 detector.paused if detector is not None else False,
                 settings.mirror_enabled,
+                (settings.prompt_offset_x, settings.prompt_offset_y),
+                (settings.result_offset_x, settings.result_offset_y),
                 settings.ui_rotation_deg,
             )
 

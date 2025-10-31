@@ -13,6 +13,13 @@ monitor_index: 1          # Projector display index (audience view)
 control_monitor_index: 0  # MacBook/control display index
 rotate_deg: 90
 ui_rotate_deg: 0          # Rotation applied to UI overlays (spinner, prompts, etc.)
+ui_offsets:
+  prompt:
+    x: 0                  # Horizontal pixel offset for the wave prompt
+    y: 0                  # Vertical pixel offset for the wave prompt
+  result:
+    x: 0                  # Horizontal pixel offset for the prize banner
+    y: 0                  # Vertical pixel offset for the prize banner
 mirror: true
 camera:
   tracking_index: 0       # Camera pointed at the stage for wave detection
@@ -32,6 +39,11 @@ timers:
 * `ui_rotate_deg` &mdash; Rotate the on-screen overlays (spinner, prompts, prize card)
   while leaving the camera feed orientation untouched. Accepts the same values as
   `rotate_deg` and defaults to `0`.
+* `ui_offsets.prompt` &mdash; Pixel nudges applied to the wave prompt before any
+  rotation. Adjust these when a rotated projector makes the "Cast a Spell" copy sit
+  too far from the physical top edge.
+* `ui_offsets.result` &mdash; Pixel nudges applied to the "YOU WIN" prize banner so
+  you can keep the reward card aligned with your set dressing after rotation.
 * `mirror` &mdash; When `true`, the feed is mirrored horizontally. You can also
   toggle mirroring at runtime from the controls panel while calibrating or
   testing to verify the orientation looks correct.
@@ -42,9 +54,9 @@ timers:
 * `target_fps` &mdash; Desired update rate for the projector display.
 * `timers.rolling` &mdash; Seconds spent animating the spinner before revealing a result.
 * `timers.result` &mdash; Seconds the placeholder prize card stays on screen.
-  The prize banner now shows a transparent, red "YOU WIN" frame in a festive
-  Chalkduster-style font so it pops on the Halloween projector without the
-  blinding white background.
+  The prize banner now shows a transparent, red "YOU WIN" frame rendered in the
+  MyFont-v2 Halloween typeface (with graceful fallbacks) so it pops on the
+  projector without the blinding white background.
 * `timers.cooldown` &mdash; Seconds to wait before returning to the idle camera feed.
 
 ## Running the mirror
@@ -96,9 +108,14 @@ fine-tune how strict the wave detector behaves without restarting the app:
   prompts read correctly.
 * **UI rotation** &mdash; Rotate the spinner, prompt, and prize overlays in 90°
   increments to match cameras that are mounted sideways. The camera feed remains
-  upright; only the pop-up UI elements rotate. Rotated overlays hug the same top
-  edge as the default layout so the prompt stays near the physical top of the
-  display after you pivot the projector.
+  upright; only the pop-up UI elements rotate. Use the offset controls below to
+  keep text pinned to the physical top edge after rotation.
+* **Wave text X/Y offset** &mdash; Move the red "Cast a Spell / Use the Terpwand"
+  prompt horizontally or vertically (in 5px steps) so it sits flush with the
+  desired edge no matter how the projector is rotated.
+* **Prize text X/Y offset** &mdash; Reposition the transparent red "YOU WIN" banner
+  that appears after a roll so it frames your prize zone perfectly even when the
+  UI is rotated.
 * **Min contour area** &mdash; Ignore blobs smaller than this number of pixels.
 * **Min circularity** &mdash; Reject candidates whose contour circularity
   (`4πA / P²`) falls below the threshold. Rounder hands or props score closer to
