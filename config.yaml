@@ -4,8 +4,8 @@ rotate_deg: 0
 ui_rotate_deg: 90
 ui_offsets:
   prompt:
-    x: -30
-    y: -355
+    x: 250
+    y: -650
   result:
     x: 70
     y: 80
@@ -16,9 +16,9 @@ camera:
 target_fps: 60
 dry_run: false
 timers:
-  rolling: 1.5
-  result: 7.0
-  cooldown: 0.5
+  rolling: 4.0
+  result: 6.0
+  cooldown: 1.5
 detection:
   hsv_min:
   - 0
@@ -57,9 +57,9 @@ calibration:
 prizes:
   track_stock: true
   stock:
-    Terp Scoop: 64
-    Candy + Sticker: 68
-    Coupon: 41
+    Terp Scoop: 56
+    Candy + Sticker: 62
+    Coupon: 37
     Lighter Case: 24
     T-Shirt: 5
   grand_prize: 0
