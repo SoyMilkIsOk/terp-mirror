@@ -3,3 +3,4 @@ __init__.py
 prize_rolls.log
 prize_stock.log
 config.yaml
+.DS_Store
