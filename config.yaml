@@ -1,7 +1,10 @@
 monitor_index: 1
+control_monitor_index: 0
 rotate_deg: 0
 mirror: true
 camera:
+  tracking_index: 0
+  display_index: 1
   index: 0
 target_fps: 30
 dry_run: false

@@ -9,11 +9,13 @@ You can adjust the projector monitor, camera, image rotation, and mirroring
 options without modifying the code.
 
 ```yaml
-monitor_index: 0
+monitor_index: 1          # Projector display index (audience view)
+control_monitor_index: 0  # MacBook/control display index
 rotate_deg: 90
 mirror: true
 camera:
-  index: 0
+  tracking_index: 0       # Camera pointed at the stage for wave detection
+  display_index: 1        # Camera feed shown to the audience
 target_fps: 60
 timers:
   rolling: 3.0
@@ -23,12 +25,16 @@ timers:
 
 * `monitor_index` &mdash; Which projector/monitor the fullscreen output should use
   (Pygame display index).
+* `control_monitor_index` &mdash; Display that hosts the operator/debug window.
 * `rotate_deg` &mdash; Rotation applied to each frame. Supported values are
   `0`, `90`, `-90`, `180`, and `-180` degrees.
 * `mirror` &mdash; When `true`, the feed is mirrored horizontally. You can also
   toggle mirroring at runtime from the controls panel while calibrating or
   testing to verify the orientation looks correct.
-* `camera.index` &mdash; The OpenCV camera index to open.
+* `camera.tracking_index` &mdash; Camera used exclusively for wave detection and the
+  operator debug window. If omitted the shared `camera.index` value is used.
+* `camera.display_index` &mdash; Camera pointed at the mirrored station that the
+  audience sees on the projector. Falls back to `camera.index` when not set.
 * `target_fps` &mdash; Desired update rate for the projector display.
 * `timers.rolling` &mdash; Seconds spent animating the spinner before revealing a result.
 * `timers.result` &mdash; Seconds the placeholder prize card stays on screen.
@@ -49,12 +55,26 @@ python -m terp_mirror.mirror_app
 * `--monitor` &mdash; Override the monitor index from the configuration file.
 * `--config` &mdash; Load settings from a different YAML config file.
 
-The mirror runs fullscreen. During operation you can use the following hotkeys:
+The mirror now opens two fullscreen windows: one on the projector with the
+audience-facing UI and a second on the MacBook that shows the tracking camera,
+debug menus, and diagnostics. During operation you can use the following
+hotkeys while the control window is focused:
 
 * <kbd>R</kbd> &mdash; Trigger a prize roll and show the spinner animation.
 * <kbd>F</kbd> &mdash; Skip directly to the prize/result card.
+* <kbd>F5</kbd> &mdash; Toggle a picture-in-picture preview of the audience camera on
+  the control window (useful while aligning both lenses).
 * <kbd>Esc</kbd> / <kbd>Q</kbd> &mdash; Exit the application.
 * <kbd>⌥ Option</kbd> (or <kbd>Alt</kbd>) &mdash; Toggle the operator controls panel and prize inventory menu.
+
+### Dual camera layout
+
+The tracking camera (configured via `camera.tracking_index`) powers the wave
+detector and the diagnostics shown on the MacBook control window. The audience
+sees the second camera (`camera.display_index`) along with the mirrored GUI on
+the projector. When you need to confirm both lenses are aimed at the same spot,
+press <kbd>F5</kbd> to enable a picture-in-picture preview of the audience camera
+inside the control window.
 
 ## Controls panel (operator cheat-sheet)
 
