@@ -39,6 +39,7 @@ from .states import MirrorState, MirrorStateMachine
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 
 HALLOWEEN_RED = (215, 0, 0)
+PROMPT_OFFSET_LIMIT = 1500
 _FONT_CANDIDATES: Sequence[str] = (
     "MyFont-v2",
     "Chalkduster",
@@ -61,7 +62,6 @@ class MirrorConfig:
     rotate_deg: int
     ui_rotate_deg: int
     prompt_offset: tuple[int, int]
-    result_offset: tuple[int, int]
     mirror: bool
     tracking_camera_index: int
     display_camera_index: int
@@ -86,6 +86,10 @@ def _parse_offset_entry(value, name: str) -> tuple[int, int]:
     except (TypeError, ValueError) as exc:
         raise MirrorConfigError(f"{name}.x and {name}.y must be integers.") from exc
     return (x, y)
+
+
+def _clamp_prompt_offset(value: int) -> int:
+    return max(-PROMPT_OFFSET_LIMIT, min(PROMPT_OFFSET_LIMIT, int(value)))
 
 
 def _load_spooky_font(size: int) -> pygame.font.Font:
@@ -147,17 +151,13 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         raise MirrorConfigError("ui_rotate_deg must be one of {0, 90, -90, 180, -180}.")
 
     prompt_offset = (0, 0)
-    result_offset = (0, 0)
     ui_offsets_cfg = data.get("ui_offsets")
     if ui_offsets_cfg is not None:
         if not isinstance(ui_offsets_cfg, dict):
-            raise MirrorConfigError("ui_offsets must be a mapping with 'prompt' and 'result' entries.")
+            raise MirrorConfigError("ui_offsets must be a mapping with a 'prompt' entry.")
         prompt_offset = _parse_offset_entry(ui_offsets_cfg.get("prompt"), "ui_offsets.prompt")
-        result_offset = _parse_offset_entry(ui_offsets_cfg.get("result"), "ui_offsets.result")
     if "prompt_offset" in data:
         prompt_offset = _parse_offset_entry(data.get("prompt_offset"), "prompt_offset")
-    if "result_offset" in data:
-        result_offset = _parse_offset_entry(data.get("result_offset"), "result_offset")
 
     timers_cfg = data.get("timers", {})
     try:
@@ -184,7 +184,6 @@ def load_config(config_path: Optional[Path] = None) -> MirrorConfig:
         rotate_deg=rotate_deg,
         ui_rotate_deg=ui_rotate_deg,
         prompt_offset=prompt_offset,
-        result_offset=result_offset,
         mirror=bool(data["mirror"]),
         tracking_camera_index=tracking_camera_index,
         display_camera_index=display_camera_index,
@@ -417,8 +416,6 @@ class RuntimeSettings:
     ui_rotation_deg: int
     prompt_offset_x: int
     prompt_offset_y: int
-    result_offset_x: int
-    result_offset_y: int
 
 
 @dataclass
@@ -464,8 +461,8 @@ class ResultOverlay:
     """Placeholder prize/result card overlay."""
 
     def __init__(self) -> None:
-        self.title_font = _load_spooky_font(110)
-        self.prize_font = _load_spooky_font(72)
+        self.title_font = _load_spooky_font(88)
+        self.prize_font = _load_spooky_font(60)
         self.text_color = HALLOWEEN_RED
         self.border_color = HALLOWEEN_RED
 
@@ -473,7 +470,7 @@ class ResultOverlay:
         overlay = pygame.Surface(target.get_size(), pygame.SRCALPHA)
 
         card_width = int(target.get_width() * 0.5)
-        card_height = int(target.get_height() * 0.35)
+        card_height = int(target.get_height() * 0.5)
         card_rect = pygame.Rect(0, 0, card_width, card_height)
         card_rect.center = center
 
@@ -777,8 +774,8 @@ class ControlPanel:
                 ),
                 step=5,
                 fmt="{:d}px",
-                minimum=-2000,
-                maximum=2000,
+                minimum=-PROMPT_OFFSET_LIMIT,
+                maximum=PROMPT_OFFSET_LIMIT,
                 coerce=lambda value: int(round(value)),
             ),
             ControlItem(
@@ -789,32 +786,8 @@ class ControlPanel:
                 ),
                 step=5,
                 fmt="{:d}px",
-                minimum=-2000,
-                maximum=2000,
-                coerce=lambda value: int(round(value)),
-            ),
-            ControlItem(
-                "Prize text X offset",
-                getter=lambda settings=self.settings: settings.result_offset_x,
-                setter=lambda value, settings=self.settings: setattr(
-                    settings, "result_offset_x", int(round(value))
-                ),
-                step=5,
-                fmt="{:d}px",
-                minimum=-2000,
-                maximum=2000,
-                coerce=lambda value: int(round(value)),
-            ),
-            ControlItem(
-                "Prize text Y offset",
-                getter=lambda settings=self.settings: settings.result_offset_y,
-                setter=lambda value, settings=self.settings: setattr(
-                    settings, "result_offset_y", int(round(value))
-                ),
-                step=5,
-                fmt="{:d}px",
-                minimum=-2000,
-                maximum=2000,
+                minimum=-PROMPT_OFFSET_LIMIT,
+                maximum=PROMPT_OFFSET_LIMIT,
                 coerce=lambda value: int(round(value)),
             ),
             ControlItem(
@@ -1308,10 +1281,6 @@ class ControlPanel:
                     "x": int(self.settings.prompt_offset_x),
                     "y": int(self.settings.prompt_offset_y),
                 },
-                "result": {
-                    "x": int(self.settings.result_offset_x),
-                    "y": int(self.settings.result_offset_y),
-                },
             },
             "mirror": bool(self.settings.mirror_enabled),
             "camera": self._build_camera_payload(),
@@ -1677,7 +1646,6 @@ def _render_phase(
     detection_paused: bool,
     mirror_enabled: bool,
     prompt_offset: tuple[int, int],
-    result_offset: tuple[int, int],
     ui_rotation_deg: int,
 ) -> None:
     if frame_surface is not None:
@@ -1734,24 +1702,38 @@ def _render_phase(
         return (int(anchor[0] + offset[0]), int(anchor[1] + offset[1]))
 
     prompt_anchor = _apply_offset(prompt_anchor, prompt_offset)
-    result_anchor = _apply_offset(result_anchor, result_offset)
-
     overlay_target = target if ui_rotation_deg == 0 else pygame.Surface(target.get_size(), pygame.SRCALPHA)
+    if overlay_target is not target:
+        overlay_target.fill((0, 0, 0, 0))
+    prompt_layer = overlay_target
+    prompt_anchor_draw = prompt_anchor
+    prompt_layer_separate = False
+
+    if ui_rotation_deg != 0:
+        layer_size = (screen_size[0] * 2, screen_size[1] * 2)
+        layer_offset = (screen_size[0] // 2, screen_size[1] // 2)
+        prompt_layer = pygame.Surface(layer_size, pygame.SRCALPHA)
+        prompt_layer.fill((0, 0, 0, 0))
+        prompt_anchor_draw = (
+            int(prompt_anchor[0] + layer_offset[0]),
+            int(prompt_anchor[1] + layer_offset[1]),
+        )
+        prompt_layer_separate = True
 
     if detection_paused:
         prompt_overlay.draw(
-            overlay_target,
+            prompt_layer,
             "Detection paused",
-            prompt_anchor,
+            prompt_anchor_draw,
             "Press P to resume",
             color=(255, 255, 255),
             subtext_color=(255, 215, 0),
         )
     elif state_machine.state is MirrorState.IDLE:
         prompt_overlay.draw(
-            overlay_target,
+            prompt_layer,
             "Cast a Spell",
-            prompt_anchor,
+            prompt_anchor_draw,
             "Use the Terpwand",
         )
     elif state_machine.state is MirrorState.ROLLING:
@@ -1788,18 +1770,30 @@ def _render_phase(
             diagnostics_overlay.draw(overlay_target, diagnostics_data)
 
     if overlay_target is not target:
-        rotated_overlay = _rotate_ui_surface(overlay_target, ui_rotation_deg)
-        target_rect = target.get_rect()
-        rotated_rect = rotated_overlay.get_rect(center=target_rect.center)
+        def _blit_rotated_layer(layer: pygame.Surface) -> None:
+            content_rect = layer.get_bounding_rect()
+            if content_rect.width == 0 and content_rect.height == 0:
+                return
 
-        content_rect = overlay_target.get_bounding_rect()
-        rotated_content_rect = rotated_overlay.get_bounding_rect()
-        if rotated_content_rect.width and rotated_content_rect.height:
-            offset_x = content_rect.left - (rotated_rect.left + rotated_content_rect.left)
-            offset_y = content_rect.top - (rotated_rect.top + rotated_content_rect.top)
-            rotated_rect.move_ip(offset_x, offset_y)
+            rotated_overlay = _rotate_ui_surface(layer, ui_rotation_deg)
+            target_rect = target.get_rect()
+            rotated_rect = rotated_overlay.get_rect(center=target_rect.center)
 
-        target.blit(rotated_overlay, rotated_rect)
+            rotated_content_rect = rotated_overlay.get_bounding_rect()
+            if rotated_content_rect.width and rotated_content_rect.height:
+                offset_x = content_rect.left - (
+                    rotated_rect.left + rotated_content_rect.left
+                )
+                offset_y = content_rect.top - (
+                    rotated_rect.top + rotated_content_rect.top
+                )
+                rotated_rect.move_ip(offset_x, offset_y)
+
+            target.blit(rotated_overlay, rotated_rect)
+
+        if prompt_layer_separate:
+            _blit_rotated_layer(prompt_layer)
+        _blit_rotated_layer(overlay_target)
 
 
 def _draw_picture_in_picture(
@@ -1862,10 +1856,8 @@ def run_mirror(
         target_fps=config.target_fps,
         mirror_enabled=config.mirror,
         ui_rotation_deg=config.ui_rotate_deg,
-        prompt_offset_x=int(config.prompt_offset[0]),
-        prompt_offset_y=int(config.prompt_offset[1]),
-        result_offset_x=int(config.result_offset[0]),
-        result_offset_y=int(config.result_offset[1]),
+        prompt_offset_x=_clamp_prompt_offset(config.prompt_offset[0]),
+        prompt_offset_y=_clamp_prompt_offset(config.prompt_offset[1]),
     )
     control_panel = ControlPanel(
         settings,
@@ -2007,7 +1999,6 @@ def run_mirror(
                 detector.paused if detector is not None else False,
                 False,
                 (settings.prompt_offset_x, settings.prompt_offset_y),
-                (settings.result_offset_x, settings.result_offset_y),
                 0,
             )
 
@@ -2041,11 +2032,10 @@ def run_mirror(
                 last_display_frame_size,
                 active_calibration,
                 config.calibration,
-                [f"Display camera: {display_status}"],
+                [],
                 detector.paused if detector is not None else False,
                 settings.mirror_enabled,
                 (settings.prompt_offset_x, settings.prompt_offset_y),
-                (settings.result_offset_x, settings.result_offset_y),
                 settings.ui_rotation_deg,
             )
 

@@ -6,9 +6,6 @@ ui_offsets:
   prompt:
     x: 0
     y: 0
-  result:
-    x: 0
-    y: 0
 mirror: true
 camera:
   tracking_index: 0

@@ -17,9 +17,6 @@ ui_offsets:
   prompt:
     x: 0                  # Horizontal pixel offset for the wave prompt
     y: 0                  # Vertical pixel offset for the wave prompt
-  result:
-    x: 0                  # Horizontal pixel offset for the prize banner
-    y: 0                  # Vertical pixel offset for the prize banner
 mirror: true
 camera:
   tracking_index: 0       # Camera pointed at the stage for wave detection
@@ -41,9 +38,9 @@ timers:
   `rotate_deg` and defaults to `0`.
 * `ui_offsets.prompt` &mdash; Pixel nudges applied to the wave prompt before any
   rotation. Adjust these when a rotated projector makes the "Cast a Spell" copy sit
-  too far from the physical top edge.
-* `ui_offsets.result` &mdash; Pixel nudges applied to the "YOU WIN" prize banner so
-  you can keep the reward card aligned with your set dressing after rotation.
+  too far from the physical top edge. The offsets now operate in the rotated
+  coordinate space so you can slide the prompt across the full projector FOV even
+  when the UI is spun 90°.
 * `mirror` &mdash; When `true`, the feed is mirrored horizontally. You can also
   toggle mirroring at runtime from the controls panel while calibrating or
   testing to verify the orientation looks correct.
@@ -56,7 +53,9 @@ timers:
 * `timers.result` &mdash; Seconds the placeholder prize card stays on screen.
   The prize banner now shows a transparent, red "YOU WIN" frame rendered in the
   MyFont-v2 Halloween typeface (with graceful fallbacks) so it pops on the
-  projector without the blinding white background.
+  projector without the blinding white background. It auto-centers on the screen
+  and scales to roughly half of the available width/height so the reward message
+  stays prominent without overwhelming the shot.
 * `timers.cooldown` &mdash; Seconds to wait before returning to the idle camera feed.
 
 ## Running the mirror
@@ -108,14 +107,12 @@ fine-tune how strict the wave detector behaves without restarting the app:
   prompts read correctly.
 * **UI rotation** &mdash; Rotate the spinner, prompt, and prize overlays in 90°
   increments to match cameras that are mounted sideways. The camera feed remains
-  upright; only the pop-up UI elements rotate. Use the offset controls below to
-  keep text pinned to the physical top edge after rotation.
+  upright; only the pop-up UI elements rotate. Use the prompt offset control
+  below to keep the message pinned to the physical top edge after rotation.
 * **Wave text X/Y offset** &mdash; Move the red "Cast a Spell / Use the Terpwand"
   prompt horizontally or vertically (in 5px steps) so it sits flush with the
-  desired edge no matter how the projector is rotated.
-* **Prize text X/Y offset** &mdash; Reposition the transparent red "YOU WIN" banner
-  that appears after a roll so it frames your prize zone perfectly even when the
-  UI is rotated.
+  desired edge no matter how the projector is rotated. The prize banner now
+  remains centered and scaled automatically, so no separate offsets are needed.
 * **Min contour area** &mdash; Ignore blobs smaller than this number of pixels.
 * **Min circularity** &mdash; Reject candidates whose contour circularity
   (`4πA / P²`) falls below the threshold. Rounder hands or props score closer to
